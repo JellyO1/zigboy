@@ -77,10 +77,10 @@ pub fn runSingleTest(allocator: std.mem.Allocator, filename: []const u8) !void {
             if (isDebug) {
                 std.log.warn("{d} {d}\n", .{ ram[0], ram[1] });
             }
-            state.memory.write(ram[0], ram[1]);
+            state.mmu.write(ram[0], ram[1]);
         }
 
-        main.step(&state);
+        state.step();
 
         if (isDebug) {
             std.log.warn("after: {any}\n", .{state.registers});
@@ -100,9 +100,9 @@ pub fn runSingleTest(allocator: std.mem.Allocator, filename: []const u8) !void {
 
         for (value.final.ram) |ram| {
             if (isDebug) {
-                std.log.warn("expected:{d} actual:{d} addr:{d}\n", .{ ram[1], state.memory.read(ram[0]), ram[0] });
+                std.log.warn("expected:{d} actual:{d} addr:{d}\n", .{ ram[1], state.mmu.read(ram[0]), ram[0] });
             }
-            try std.testing.expectEqual(ram[1], state.memory.read(ram[0]));
+            try std.testing.expectEqual(ram[1], state.mmu.read(ram[0]));
         }
     }
 }
