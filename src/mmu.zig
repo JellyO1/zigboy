@@ -1,0 +1,173 @@
+const std = @import("std");
+
+// Interrupt Flags
+pub const InterruptFlags = packed struct(u8) {
+    VBlank: bool = false,
+    LCD: bool = false,
+    Timer: bool = false,
+    Serial: bool = false,
+    Joypad: bool = false,
+    _: u3 = 0,
+
+    pub fn init(val: ?u8) InterruptFlags {
+        if (val) |v| {
+            return @as(InterruptFlags, @bitCast(v));
+        }
+
+        return .{
+            .VBlank = false,
+            .LCD = false,
+            .Timer = false,
+            .Serial = false,
+            .Joypad = false,
+            ._ = 0,
+        };
+    }
+};
+
+pub const Tile = struct {
+    data: [8][8]u2,
+};
+
+/// Memory Management Unit
+pub const MMU = struct {
+    // ROM bank 0 (16KB)
+    rom_bank0: [0x4000]u8,
+    // ROM bank 1-N (16KB), used for bank switching
+    rom_bank_n: [0x4000]u8,
+    // Video RAM (8KB)
+    vram: [0x2000]u8,
+    // External RAM (8KB)
+    external_ram: [0x2000]u8,
+    // Work RAM (8KB)
+    work_ram: [0x2000]u8,
+    // Echo RAM (mirror of work RAM)
+    echo_ram: [0x2000]u8,
+    // Object Attribute Memory (OAM) sprite RAM
+    // oam: [0xA0]u8,
+    oam: [0x100]u8,
+    // Not usable
+    // unused: [0x60]u8,
+    // IO registers
+    io_registers: [0x80]u8,
+    // High RAM
+    hram: [0x7F]u8,
+    // Interrupt Enable register
+    ie_register: InterruptFlags,
+
+    tileset: [384]Tile,
+
+    // Memory Bank Controller
+    // mbc: ?MBC = null,
+
+    pub fn init() MMU {
+        return .{
+            .rom_bank0 = std.mem.zeroes([0x4000]u8),
+            .rom_bank_n = std.mem.zeroes([0x4000]u8),
+            .vram = std.mem.zeroes([0x2000]u8),
+            .external_ram = std.mem.zeroes([0x2000]u8),
+            .work_ram = std.mem.zeroes([0x2000]u8),
+            .echo_ram = std.mem.zeroes([0x2000]u8),
+            // .oam = std.mem.zeroes([0xA0]u8),
+            .oam = std.mem.zeroes([0x100]u8),
+            .io_registers = std.mem.zeroes([0x80]u8),
+            .hram = std.mem.zeroes([0x7F]u8),
+            .ie_register = InterruptFlags.init(null),
+            .tileset = std.mem.zeroes([384]Tile),
+        };
+    }
+
+    pub fn read(self: *MMU, addr: u16) u8 {
+        return switch (addr) {
+            0x0000...0x3FFF => self.rom_bank0[addr],
+            0x4000...0x7FFF => self.rom_bank_n[addr - 0x4000],
+            0x8000...0x9FFF => self.vram[addr - 0x8000],
+            0xA000...0xBFFF => self.external_ram[addr - 0xA000],
+            0xC000...0xDFFF => self.work_ram[addr - 0xC000],
+            0xE000...0xFDFF => self.echo_ram[addr - 0xE000],
+            // 0xFE00...0xFE9F => self.oam[addr - 0xFE00],
+            // 0xFEA0...0xFEFF => 0x00, // Not Usable
+            0xFE00...0xFEFF => self.oam[addr - 0xFE00],
+            0xFF00...0xFF7F => self.io_registers[addr - 0xFF00],
+            0xFF80...0xFFFE => self.hram[addr - 0xFF80],
+            0xFFFF => @bitCast(self.ie_register),
+            // else => 0xFF,
+        };
+    }
+
+    pub fn readPtr(self: *MMU, addr: u16) *u8 {
+        return switch (addr) {
+            0x0000...0x3FFF => &self.rom_bank0[addr],
+            0x4000...0x7FFF => &self.rom_bank_n[addr - 0x4000],
+            0x8000...0x9FFF => &self.vram[addr - 0x8000],
+            0xA000...0xBFFF => &self.external_ram[addr - 0xA000],
+            0xC000...0xDFFF => &self.work_ram[addr - 0xC000],
+            0xE000...0xFDFF => &self.echo_ram[addr - 0xE000],
+            // 0xFE00...0xFE9F => &self.oam[addr - 0xFE00],
+            // 0xFEA0...0xFEFF => 0x00, // Not Usable
+            0xFE00...0xFEFF => &self.oam[addr - 0xFE00],
+            0xFF00...0xFF7F => &self.io_registers[addr - 0xFF00],
+            0xFF80...0xFFFE => &self.hram[addr - 0xFF80],
+            0xFFFF => @constCast(@as(*const u8, &@bitCast(self.ie_register))),
+            // else => 0xFF,
+        };
+    }
+
+    pub fn read16(self: *MMU, addr: u16) u16 {
+        const high: u16 = @as(u16, @intCast(self.read(addr + 1))) << 8;
+        const low: u16 = @intCast(self.read(addr));
+        return high | low;
+    }
+
+    pub fn write(self: *MMU, addr: u16, value: u8) void {
+        switch (addr) {
+            0x0000...0x3FFF => self.rom_bank0[addr] = value,
+            0x4000...0x7FFF => self.rom_bank_n[addr - 0x4000] = value,
+            0x8000...0x9FFF => {
+                self.vram[addr - 0x8000] = value;
+
+                // If the address is outside of the tileset range, return
+                if (addr >= 0x9800) return;
+
+                // A tile is 8x8 with each row being 2 bytes, that is 16 bytes total.
+                const tileIndex = (addr - 0x8000) / 16;
+                // Every two bytes is a row
+                const rowIndex = ((addr - 0x8000) % 16) / 2;
+
+                // We need both bytes of the row to decode the tile data
+                // The first byte (low bits) is at the current address
+                // The second byte (high bits) is at the next address
+                if ((addr - 0x8000) % 2 == 0) {
+                    // This is the first byte of the row, we need to wait for the second byte
+                    return;
+                }
+
+                // Now we have both bytes, decode the row
+                const lowByte = self.vram[addr - 0x8000 - 1]; // Previous byte
+                const highByte = value; // Current byte
+
+                // Loop through every pixel in the row
+                inline for (0..8) |pixelIndex| {
+                    const bitIndex: u8 = 1 << (7 - pixelIndex);
+                    const lowBit: u8 = lowByte & bitIndex;
+                    const highBit: u8 = highByte & bitIndex;
+                    const color: u2 = @as(u2, @intCast(lowBit)) | (@as(u2, @intCast(highBit)) << 1);
+                    self.tileset[tileIndex].data[rowIndex][pixelIndex] = color;
+                }
+            },
+            0xA000...0xBFFF => self.external_ram[addr - 0xA000] = value,
+            0xC000...0xDFFF => {
+                self.work_ram[addr - 0xC000] = value;
+                self.echo_ram[addr - 0xC000] = value;
+            },
+            0xE000...0xFDFF => self.echo_ram[addr - 0xE000] = value,
+            // 0xFE00...0xFE9F => self.oam[addr - 0xFE00] = value,
+            // 0xFEA0...0xFEFF => {}, // Not Usable
+            0xFE00...0xFEFF => self.oam[addr - 0xFE00] = value,
+            0xFF00...0xFF7F => self.io_registers[addr - 0xFF00] = value,
+            0xFF80...0xFFFE => self.hram[addr - 0xFF80] = value,
+            0xFFFF => self.ie_register = @as(InterruptFlags, @bitCast(value)),
+            // else => {},
+        }
+    }
+};

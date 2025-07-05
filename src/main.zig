@@ -6,17 +6,15 @@ const c = @cImport({
     @cDefine("SDL_DISABLE_OLD_NAMEs", {});
     @cInclude("SDL3/SDL.h");
     @cInclude("SDL3/SDL_revision.h");
-
-    // For programs that provide their own entry points instead of relying on SDL's main function
-    // macro magic, 'SDL_MAIN_HANDLED' should be defined before including 'SDL_main.h'.
-    @cDefine("SDL_MAIN_HANDLED", {});
-    @cInclude("SDL3/SDL_main.h");
 });
+
+const graphics = @import("graphics.zig");
+const PPU = @import("ppu.zig").PPU;
+const MMU = @import("mmu.zig").MMU;
 
 // Two types of cycles: T states and M cycles
 // M cycles (“machine” cycles, 1:4 clock) are the base unit of CPU instructions
 // T states or T cycles (“transistor”(?) states, 1:1 clock) are the base unit of system operation and many components are clocked directly on T state
-
 pub const MCycle = 4;
 // Sharp SM83 clock rate (4.194304 MHz)
 pub const CPUClockRate = 4194304;
@@ -26,31 +24,6 @@ pub const ConditionCode = enum(u2) {
     C,
     NZ,
     NC,
-};
-
-// Interrupt Flags
-pub const InterruptFlags = packed struct(u8) {
-    VBlank: bool = false,
-    LCD: bool = false,
-    Timer: bool = false,
-    Serial: bool = false,
-    Joypad: bool = false,
-    _: u3 = 0,
-
-    pub fn init(val: ?u8) InterruptFlags {
-        if (val) |v| {
-            return @as(InterruptFlags, @bitCast(v));
-        }
-
-        return .{
-            .VBlank = false,
-            .LCD = false,
-            .Timer = false,
-            .Serial = false,
-            .Joypad = false,
-            ._ = 0,
-        };
-    }
 };
 
 pub const Flags = packed struct(u8) {
@@ -183,106 +156,15 @@ pub const Registers = struct {
     }
 };
 
-pub const MemoryMap = struct {
-    // ROM bank 0 (16KB)
-    rom_bank0: [0x4000]u8,
-    // ROM bank 1-N (16KB), used for bank switching
-    rom_bank_n: [0x4000]u8,
-    // Video RAM (8KB)
-    vram: [0x2000]u8,
-    // External RAM (8KB)
-    external_ram: [0x2000]u8,
-    // Work RAM (8KB)
-    work_ram: [0x2000]u8,
-    // Echo RAM (mirror of work RAM)
-    echo_ram: [0x2000]u8,
-    // Object Attribute Memory (OAM) sprite RAM
-    // oam: [0xA0]u8,
-    oam: [0x100]u8,
-    // Not usable
-    // unused: [0x60]u8,
-    // IO registers
-    io_registers: [0x80]u8,
-    // High RAM
-    hram: [0x7F]u8,
-    // Interrupt Enable register
-    ie_register: InterruptFlags,
-
-    // Memory Bank Controller
-    // mbc: ?MBC = null,
-
-    pub fn init() MemoryMap {
-        return .{
-            .rom_bank0 = std.mem.zeroes([0x4000]u8),
-            .rom_bank_n = std.mem.zeroes([0x4000]u8),
-            .vram = std.mem.zeroes([0x2000]u8),
-            .external_ram = std.mem.zeroes([0x2000]u8),
-            .work_ram = std.mem.zeroes([0x2000]u8),
-            .echo_ram = std.mem.zeroes([0x2000]u8),
-            // .oam = std.mem.zeroes([0xA0]u8),
-            .oam = std.mem.zeroes([0x100]u8),
-            .io_registers = std.mem.zeroes([0x80]u8),
-            .hram = std.mem.zeroes([0x7F]u8),
-            .ie_register = InterruptFlags.init(null),
-        };
-    }
-
-    pub fn read(self: *MemoryMap, addr: u16) u8 {
-        // 0xEF06 - 0xE000 = 0xF06
-        // 0xCF06 - 0xC000 = 0xF06
-        return switch (addr) {
-            0x0000...0x3FFF => self.rom_bank0[addr],
-            0x4000...0x7FFF => self.rom_bank_n[addr - 0x4000],
-            0x8000...0x9FFF => self.vram[addr - 0x8000],
-            0xA000...0xBFFF => self.external_ram[addr - 0xA000],
-            0xC000...0xDFFF => self.work_ram[addr - 0xC000],
-            0xE000...0xFDFF => self.echo_ram[addr - 0xE000],
-            // 0xFE00...0xFE9F => self.oam[addr - 0xFE00],
-            // 0xFEA0...0xFEFF => 0x00, // Not Usable
-            0xFE00...0xFEFF => self.oam[addr - 0xFE00],
-            0xFF00...0xFF7F => self.io_registers[addr - 0xFF00],
-            0xFF80...0xFFFE => self.hram[addr - 0xFF80],
-            0xFFFF => @bitCast(self.ie_register),
-            // else => 0xFF,
-        };
-    }
-
-    pub fn read16(self: *MemoryMap, addr: u16) u16 {
-        const high: u16 = @as(u16, @intCast(self.read(addr + 1))) << 8;
-        const low: u16 = @intCast(self.read(addr));
-        return high | low;
-    }
-
-    pub fn write(self: *MemoryMap, addr: u16, value: u8) void {
-        switch (addr) {
-            0x0000...0x3FFF => self.rom_bank0[addr] = value,
-            0x4000...0x7FFF => self.rom_bank_n[addr - 0x4000] = value,
-            0x8000...0x9FFF => self.vram[addr - 0x8000] = value,
-            0xA000...0xBFFF => self.external_ram[addr - 0xA000] = value,
-            0xC000...0xDFFF => {
-                self.work_ram[addr - 0xC000] = value;
-                self.echo_ram[addr - 0xC000] = value;
-            },
-            0xE000...0xFDFF => self.echo_ram[addr - 0xE000] = value,
-            // 0xFE00...0xFE9F => self.oam[addr - 0xFE00] = value,
-            // 0xFEA0...0xFEFF => {}, // Not Usable
-            0xFE00...0xFEFF => self.oam[addr - 0xFE00] = value,
-            0xFF00...0xFF7F => self.io_registers[addr - 0xFF00] = value,
-            0xFF80...0xFFFE => self.hram[addr - 0xFF80] = value,
-            0xFFFF => self.ie_register = @as(InterruptFlags, @bitCast(value)),
-            // else => {},
-        }
-    }
-};
-
 pub const GameBoyState = struct {
+    /// Picture Processing Unit
+    ppu: PPU,
+    /// General Purpose registers
     registers: Registers,
-    /// Memory Map
-    memory: MemoryMap,
+    /// Memory management unit
+    mmu: MMU,
     /// Total cycles elapsed
     cycles: u64,
-    /// No instruction takes more than 6 cycles
-    current_instruction_cycles: u32,
     /// Interrupt Master Enable
     ime: bool,
     /// EI delay (1 instruction delay before turning on IME)
@@ -291,11 +173,12 @@ pub const GameBoyState = struct {
     halt: bool,
 
     pub fn init(flags: ?Flags) GameBoyState {
+        var mmu = MMU.init();
         return .{
             .registers = Registers.init(flags),
-            .memory = MemoryMap.init(),
+            .mmu = mmu,
+            .ppu = PPU.init(&mmu),
             .cycles = 0,
-            .current_instruction_cycles = 0,
             .ime = false,
             .ei_delay = false,
             .halt = false,
@@ -303,15 +186,26 @@ pub const GameBoyState = struct {
     }
 
     pub fn initTest(registers: Registers, ime: bool, ei_delay: bool) GameBoyState {
+        var mmu = MMU.init();
         return .{
             .registers = registers,
-            .memory = MemoryMap.init(),
+            .mmu = mmu,
+            .ppu = PPU.init(&mmu),
             .cycles = 0,
-            .current_instruction_cycles = 0,
             .ime = ime,
             .ei_delay = ei_delay,
             .halt = false,
         };
+    }
+
+    pub fn step(self: *GameBoyState) void {
+        const opcode = fetch(self);
+        const cycles = execute(self, opcode);
+        self.cycles += cycles;
+        self.ppu.step(cycles);
+
+        // sleep for the number of nanoseconds equivalent to the number of cycles
+        std.time.sleep((cycles / CPUClockRate) * std.time.ns_per_s);
     }
 };
 
@@ -333,7 +227,7 @@ pub fn adc_a_r8(state: *GameBoyState, r8: Registers.Byte) u32 {
 }
 
 pub fn adc_a_vhl(state: *GameBoyState) u32 {
-    const result, const overflow = @addWithOverflow(state.registers.A, state.memory.read(state.registers.getWord(Registers.Word.HL)) +% @as(u8, @as(u1, @bitCast(state.registers.F.C))));
+    const result, const overflow = @addWithOverflow(state.registers.A, state.mmu.read(state.registers.getWord(Registers.Word.HL)) +% @as(u8, @as(u1, @bitCast(state.registers.F.C))));
     state.registers.A = result;
 
     state.registers.F.Z = result == 0;
@@ -369,7 +263,7 @@ pub fn add_a_r8(state: *GameBoyState, r8: Registers.Byte) u32 {
 }
 
 pub fn add_a_vhl(state: *GameBoyState) u32 {
-    const result, const overflow = @addWithOverflow(state.registers.A, state.memory.read(state.registers.getWord(Registers.Word.HL)));
+    const result, const overflow = @addWithOverflow(state.registers.A, state.mmu.read(state.registers.getWord(Registers.Word.HL)));
     state.registers.A = result;
 
     state.registers.F.Z = result == 0;
@@ -441,7 +335,7 @@ pub fn and_a_r8(state: *GameBoyState, r8: Registers.Byte) u32 {
 }
 
 pub fn and_a_vhl(state: *GameBoyState) u32 {
-    const val = state.memory.read(state.registers.getWord(Registers.Word.HL));
+    const val = state.mmu.read(state.registers.getWord(Registers.Word.HL));
     state.registers.A = state.registers.A & val;
     state.registers.F.Z = state.registers.A == 0;
     state.registers.F.N = false;
@@ -469,7 +363,7 @@ pub fn bit_u3_r8(state: *GameBoyState, comptime vu3: u3, r8: Registers.Byte) u32
 }
 
 pub fn bit_u3_vhl(state: *GameBoyState, comptime vu3: u3) u32 {
-    const val = state.memory.read(state.registers.getWord(Registers.Word.HL));
+    const val = state.mmu.read(state.registers.getWord(Registers.Word.HL));
     state.registers.F.Z = (val & (1 << vu3)) == 0;
     state.registers.F.N = false;
     state.registers.F.H = true;
@@ -488,8 +382,8 @@ pub fn call_n16(state: *GameBoyState, n16: *const u16) u32 {
     state.registers.SP -= 2;
 
     // Write high and low bytes to stack
-    state.memory.write(state.registers.SP + 1, high);
-    state.memory.write(state.registers.SP, low);
+    state.mmu.write(state.registers.SP + 1, high);
+    state.mmu.write(state.registers.SP, low);
 
     // jump to the new address
     state.registers.PC = n16.*;
@@ -542,7 +436,7 @@ pub fn cp_a_r8(state: *GameBoyState, r8: Registers.Byte) u32 {
 }
 
 pub fn cp_a_vhl(state: *GameBoyState) u32 {
-    const val = state.memory.read(state.registers.getWord(Registers.Word.HL));
+    const val = state.mmu.read(state.registers.getWord(Registers.Word.HL));
     const result, const overflow = @subWithOverflow(state.registers.A, val);
     state.registers.F.Z = result == 0;
     state.registers.F.N = false;
@@ -608,8 +502,8 @@ pub fn dec_r8(state: *GameBoyState, r8: Registers.Byte) u32 {
 }
 
 pub fn dec_vhl(state: *GameBoyState) u32 {
-    const val = state.memory.read(state.registers.getWord(Registers.Word.HL));
-    state.memory.write(state.registers.getWord(Registers.Word.HL), val -% 1);
+    const val = state.mmu.read(state.registers.getWord(Registers.Word.HL));
+    state.mmu.write(state.registers.getWord(Registers.Word.HL), val -% 1);
     state.registers.F.Z = (val -% 1) == 0;
     state.registers.F.N = true;
     state.registers.F.H = (val & 0xF) < 1;
@@ -667,8 +561,8 @@ pub fn inc_r8(state: *GameBoyState, r8: Registers.Byte) u32 {
 }
 
 pub fn inc_vhl(state: *GameBoyState) u32 {
-    const val = state.memory.read(state.registers.getWord(Registers.Word.HL));
-    state.memory.write(state.registers.getWord(Registers.Word.HL), val +% 1);
+    const val = state.mmu.read(state.registers.getWord(Registers.Word.HL));
+    state.mmu.write(state.registers.getWord(Registers.Word.HL), val +% 1);
     state.registers.F.Z = (val +% 1) == 0;
     state.registers.F.N = false;
     state.registers.F.H = (val & 0xF) > 0xF;
@@ -784,31 +678,31 @@ pub fn ld_r16_n16(state: *GameBoyState, r16: Registers.Word, n16: *const u16) u3
 
 /// Copy the value of the register to the memory location specified by the registers H and L
 pub fn ld_vhl_r8(state: *GameBoyState, r8: Registers.Byte) u32 {
-    state.memory.write(state.registers.getWord(Registers.Word.HL), state.registers.getByte(r8));
+    state.mmu.write(state.registers.getWord(Registers.Word.HL), state.registers.getByte(r8));
     return MCycle * 2;
 }
 
 /// Copy the value of the immediate byte to the memory location specified by the registers H and L
 pub fn ld_vhl_n8(state: *GameBoyState, n8: *const u8) u32 {
-    state.memory.write(state.registers.getWord(Registers.Word.HL), n8.*);
+    state.mmu.write(state.registers.getWord(Registers.Word.HL), n8.*);
     return MCycle * 3;
 }
 
 /// Copy the value of the memory location specified by the registers H and L to the register
 pub fn ld_r8_vhl(state: *GameBoyState, r8: Registers.Byte) u32 {
-    state.registers.setByte(r8, state.memory.read(state.registers.getWord(Registers.Word.HL)));
+    state.registers.setByte(r8, state.mmu.read(state.registers.getWord(Registers.Word.HL)));
     return MCycle * 2;
 }
 
 /// Copy the value in the register A to the byte pointed to by r16
 pub fn ld_vr16_a(state: *GameBoyState, r16: Registers.Word) u32 {
-    state.memory.write(state.registers.getWord(r16), state.registers.A);
+    state.mmu.write(state.registers.getWord(r16), state.registers.A);
     return MCycle * 2;
 }
 
 /// Copy the value in the register A to the byte pointed to by n16
 pub fn ld_n16_a(state: *GameBoyState, n16: *const u16) u32 {
-    state.memory.write(n16.*, state.registers.A);
+    state.mmu.write(n16.*, state.registers.A);
 
     return MCycle * 4;
 }
@@ -818,7 +712,7 @@ pub fn ld_n16_a(state: *GameBoyState, n16: *const u16) u32 {
 /// n16 must be in the range 0xFF00-0xFFFF
 pub fn ldh_n16_a(state: *GameBoyState, n16: u16) u32 {
     if (n16 >= 0xFF00 and n16 <= 0xFFFF) {
-        state.memory.write(n16, state.registers.A);
+        state.mmu.write(n16, state.registers.A);
     }
 
     return MCycle * 3;
@@ -826,25 +720,25 @@ pub fn ldh_n16_a(state: *GameBoyState, n16: u16) u32 {
 
 /// Copy the value in the register A to the byte pointed to by 0xFF00 + n8
 pub fn ldh_n8_a(state: *GameBoyState, n8: *const u8) u32 {
-    state.memory.write(0xFF00 + @as(u16, @intCast(n8.*)), state.registers.A);
+    state.mmu.write(0xFF00 + @as(u16, @intCast(n8.*)), state.registers.A);
     return MCycle * 3;
 }
 
 /// Copy the value in the register A to the byte pointed to by 0xFF00 + C
 pub fn ldh_vc_a(state: *GameBoyState) u32 {
-    state.memory.write(0xFF00 + @as(u16, @intCast(state.registers.getByte(Registers.Byte.C))), state.registers.A);
+    state.mmu.write(0xFF00 + @as(u16, @intCast(state.registers.getByte(Registers.Byte.C))), state.registers.A);
     return MCycle * 2;
 }
 
 /// Copy the value in the byte pointed to by r16 to the register A
 pub fn ld_a_vr16(state: *GameBoyState, r16: Registers.Word) u32 {
-    state.registers.A = state.memory.read(state.registers.getWord(r16));
+    state.registers.A = state.mmu.read(state.registers.getWord(r16));
     return MCycle * 2;
 }
 
 /// Copy the value in the byte pointed to by n16 to the register A
 pub fn ld_a_vn16(state: *GameBoyState, n16: u16) u32 {
-    state.registers.A = state.memory.read(n16);
+    state.registers.A = state.mmu.read(n16);
     return MCycle * 4;
 }
 
@@ -853,47 +747,47 @@ pub fn ld_a_vn16(state: *GameBoyState, n16: u16) u32 {
 /// n16 must be in the range 0xFF00-0xFFFF
 pub fn ldh_a_vn16(state: *GameBoyState, n16: u16) u32 {
     if (n16 >= 0xFF00 and n16 <= 0xFFFF) {
-        state.registers.A = state.memory.read(n16);
+        state.registers.A = state.mmu.read(n16);
     }
     return MCycle * 3;
 }
 
 /// Copy the value in the byte pointed to by 0xFF00 + n8 to the register A
 pub fn ldh_a_n8(state: *GameBoyState, n8: *const u8) u32 {
-    state.registers.A = state.memory.read(0xFF00 + @as(u16, @intCast(n8.*)));
+    state.registers.A = state.mmu.read(0xFF00 + @as(u16, @intCast(n8.*)));
     return MCycle * 3;
 }
 
 /// Copy the value in the byte pointed to by 0xFF00 + C to the register A
 pub fn ldh_a_vc(state: *GameBoyState) u32 {
-    state.registers.A = state.memory.read(0xFF00 + @as(u16, @intCast(state.registers.getByte(Registers.Byte.C))));
+    state.registers.A = state.mmu.read(0xFF00 + @as(u16, @intCast(state.registers.getByte(Registers.Byte.C))));
     return MCycle * 2;
 }
 
 /// Copy the value in the register A to the byte pointed to by HL and increment HL
 pub fn ld_hli_a(state: *GameBoyState) u32 {
-    state.memory.write(state.registers.getWord(Registers.Word.HL), state.registers.A);
+    state.mmu.write(state.registers.getWord(Registers.Word.HL), state.registers.A);
     state.registers.setWord(Registers.Word.HL, state.registers.getWord(Registers.Word.HL) + 1);
     return MCycle * 2;
 }
 
 /// Copy the value in the register A to the byte pointed to by HL and decrement HL
 pub fn ld_hld_a(state: *GameBoyState) u32 {
-    state.memory.write(state.registers.getWord(Registers.Word.HL), state.registers.A);
+    state.mmu.write(state.registers.getWord(Registers.Word.HL), state.registers.A);
     state.registers.setWord(Registers.Word.HL, state.registers.getWord(Registers.Word.HL) - 1);
     return MCycle * 2;
 }
 
 /// Copy the value in the byte pointed to by HL to the register A and decrement HL
 pub fn ld_a_hld(state: *GameBoyState) u32 {
-    state.registers.A = state.memory.read(state.registers.getWord(Registers.Word.HL));
+    state.registers.A = state.mmu.read(state.registers.getWord(Registers.Word.HL));
     state.registers.setWord(Registers.Word.HL, state.registers.getWord(Registers.Word.HL) - 1);
     return MCycle * 2;
 }
 
 /// Copy the value in the byte pointed to by HL to the register A and increment HL
 pub fn ld_a_hli(state: *GameBoyState) u32 {
-    state.registers.A = state.memory.read(state.registers.getWord(Registers.Word.HL));
+    state.registers.A = state.mmu.read(state.registers.getWord(Registers.Word.HL));
     state.registers.setWord(Registers.Word.HL, state.registers.getWord(Registers.Word.HL) + 1);
     return MCycle * 2;
 }
@@ -906,8 +800,8 @@ pub fn ld_sp_n16(state: *GameBoyState, n16: *const u16) u32 {
 
 /// Copy SP & 0xFF to address n16 and SP >> 8 to address n16 + 1
 pub fn ld_vn16_sp(state: *GameBoyState, n16: *const u16) u32 {
-    state.memory.write(n16.*, @intCast(state.registers.SP & 0xFF));
-    state.memory.write(n16.* + 1, @intCast(state.registers.SP >> 8));
+    state.mmu.write(n16.*, @intCast(state.registers.SP & 0xFF));
+    state.mmu.write(n16.* + 1, @intCast(state.registers.SP >> 8));
     return MCycle * 5;
 }
 
@@ -961,7 +855,7 @@ pub fn or_a_r8(state: *GameBoyState, r8: Registers.Byte) u32 {
 
 /// Set the value of register A to the bitwise OR between A and the value in memory at the address in register HL
 pub fn or_a_vhl(state: *GameBoyState) u32 {
-    state.registers.A = state.registers.A | state.memory.read(state.registers.getWord(Registers.Word.HL));
+    state.registers.A = state.registers.A | state.mmu.read(state.registers.getWord(Registers.Word.HL));
 
     if (state.registers.A == 0) {
         state.registers.F.Z = true;
@@ -991,8 +885,8 @@ pub fn or_a_n8(state: *GameBoyState, n8: *const u8) u32 {
 
 /// Pop register AF from the stack
 pub fn pop_af(state: *GameBoyState) u32 {
-    state.registers.F = @as(Flags, @bitCast(state.memory.read(state.registers.SP)));
-    state.registers.A = state.memory.read(state.registers.SP + 1);
+    state.registers.F = @as(Flags, @bitCast(state.mmu.read(state.registers.SP)));
+    state.registers.A = state.mmu.read(state.registers.SP + 1);
     state.registers.SP += 2;
 
     return MCycle * 3;
@@ -1002,18 +896,18 @@ pub fn pop_af(state: *GameBoyState) u32 {
 pub fn pop_r16(state: *GameBoyState, r16: Registers.Word) u32 {
     switch (r16) {
         Registers.Word.BC => {
-            state.registers.B = state.memory.read(state.registers.SP + 1);
-            state.registers.C = state.memory.read(state.registers.SP);
+            state.registers.B = state.mmu.read(state.registers.SP + 1);
+            state.registers.C = state.mmu.read(state.registers.SP);
             state.registers.SP += 2;
         },
         Registers.Word.DE => {
-            state.registers.D = state.memory.read(state.registers.SP + 1);
-            state.registers.E = state.memory.read(state.registers.SP);
+            state.registers.D = state.mmu.read(state.registers.SP + 1);
+            state.registers.E = state.mmu.read(state.registers.SP);
             state.registers.SP += 2;
         },
         Registers.Word.HL => {
-            state.registers.H = state.memory.read(state.registers.SP + 1);
-            state.registers.L = state.memory.read(state.registers.SP);
+            state.registers.H = state.mmu.read(state.registers.SP + 1);
+            state.registers.L = state.mmu.read(state.registers.SP);
             state.registers.SP += 2;
         },
         else => {},
@@ -1025,8 +919,8 @@ pub fn pop_r16(state: *GameBoyState, r16: Registers.Word) u32 {
 /// Push register AF to the stack
 pub fn push_af(state: *GameBoyState) u32 {
     state.registers.SP -= 2;
-    state.memory.write(state.registers.SP + 1, state.registers.A);
-    state.memory.write(state.registers.SP, @as(u8, @bitCast(state.registers.F)));
+    state.mmu.write(state.registers.SP + 1, state.registers.A);
+    state.mmu.write(state.registers.SP, @as(u8, @bitCast(state.registers.F)));
 
     return MCycle * 4;
 }
@@ -1036,16 +930,16 @@ pub fn push_r16(state: *GameBoyState, r16: Registers.Word) u32 {
     state.registers.SP -= 2;
     switch (r16) {
         Registers.Word.BC => {
-            state.memory.write(state.registers.SP + 1, state.registers.B);
-            state.memory.write(state.registers.SP, state.registers.C);
+            state.mmu.write(state.registers.SP + 1, state.registers.B);
+            state.mmu.write(state.registers.SP, state.registers.C);
         },
         Registers.Word.DE => {
-            state.memory.write(state.registers.SP + 1, state.registers.D);
-            state.memory.write(state.registers.SP, state.registers.E);
+            state.mmu.write(state.registers.SP + 1, state.registers.D);
+            state.mmu.write(state.registers.SP, state.registers.E);
         },
         Registers.Word.HL => {
-            state.memory.write(state.registers.SP + 1, state.registers.H);
-            state.memory.write(state.registers.SP, state.registers.L);
+            state.mmu.write(state.registers.SP + 1, state.registers.H);
+            state.mmu.write(state.registers.SP, state.registers.L);
         },
         else => {},
     }
@@ -1075,14 +969,14 @@ pub fn res_u3_vhl(state: *GameBoyState, vu3: u3) u32 {
     const invertedMask = ~mask;
 
     // Applies a bitwise AND between the register value and the inverted mask (e.g. 0b11111111 & 0b10111111 -> 0b10111111)
-    state.memory.write(state.registers.getWord(Registers.Word.HL), state.memory.read(state.registers.getWord(Registers.Word.HL)) & invertedMask);
+    state.mmu.write(state.registers.getWord(Registers.Word.HL), state.mmu.read(state.registers.getWord(Registers.Word.HL)) & invertedMask);
     return MCycle * 4;
 }
 
 /// Returns from a function call
 pub fn ret(state: *GameBoyState) u32 {
-    state.registers.PC = @as(u16, state.memory.read(state.registers.SP));
-    state.registers.PC |= @as(u16, state.memory.read(state.registers.SP + 1)) << 8;
+    state.registers.PC = @as(u16, state.mmu.read(state.registers.SP));
+    state.registers.PC |= @as(u16, state.mmu.read(state.registers.SP + 1)) << 8;
     state.registers.SP += 2;
     return MCycle * 4;
 }
@@ -1142,16 +1036,16 @@ pub fn rl_r8(state: *GameBoyState, r8: Registers.Byte) u32 {
 
 /// Rotates the value of memory location specified by HL left, through the carry flag
 pub fn rl_vhl(state: *GameBoyState) u32 {
-    const val = state.memory.read(state.registers.getWord(Registers.Word.HL));
+    const val = state.mmu.read(state.registers.getWord(Registers.Word.HL));
     const carry = @as(u8, @as(u1, @bitCast(state.registers.F.C)));
     // Shift left and set least significant bit to carry flag
-    state.memory.write(state.registers.getWord(Registers.Word.HL), (val << 1) | (carry));
+    state.mmu.write(state.registers.getWord(Registers.Word.HL), (val << 1) | (carry));
 
     // Set carry flag to the most significant bit of the original register value
     state.registers.F.C = (val >> 7) == 1;
 
     // Set zero flag if register value is 0
-    state.registers.F.Z = state.memory.read(state.registers.getWord(Registers.Word.HL)) == 0;
+    state.registers.F.Z = state.mmu.read(state.registers.getWord(Registers.Word.HL)) == 0;
     state.registers.F.N = false;
     state.registers.F.H = false;
 
@@ -1196,16 +1090,16 @@ pub fn rlc_r8(state: *GameBoyState, r8: Registers.Byte) u32 {
 
 /// Rotates the value of memory location specified by HL left and sets the carry flag
 pub fn rlc_vhl(state: *GameBoyState) u32 {
-    const val = state.memory.read(state.registers.getWord(Registers.Word.HL));
+    const val = state.mmu.read(state.registers.getWord(Registers.Word.HL));
 
     // Rotate the memory location left
-    state.memory.write(state.registers.getWord(Registers.Word.HL), (val << 1) | (val >> 7));
+    state.mmu.write(state.registers.getWord(Registers.Word.HL), (val << 1) | (val >> 7));
 
     // Set carry flag to the most significant bit of the original register value
     state.registers.F.C = (val >> 7) == 1;
 
     // Set zero flag if register value is 0
-    state.registers.F.Z = state.memory.read(state.registers.getWord(Registers.Word.HL)) == 0;
+    state.registers.F.Z = state.mmu.read(state.registers.getWord(Registers.Word.HL)) == 0;
     state.registers.F.N = false;
     state.registers.F.H = false;
 
@@ -1249,16 +1143,16 @@ pub fn rr_r8(state: *GameBoyState, r8: Registers.Byte) u32 {
 
 /// Rotates the value of memory location specified by HL right through the carry flag
 pub fn rr_vhl(state: *GameBoyState) u32 {
-    const val = state.memory.read(state.registers.getWord(Registers.Word.HL));
+    const val = state.mmu.read(state.registers.getWord(Registers.Word.HL));
     const carry = @as(u8, @as(u1, @bitCast(state.registers.F.C))) << 7;
 
     // Write the rotated value to memory
-    state.memory.write(state.registers.getWord(Registers.Word.HL), (val >> 1) | carry);
+    state.mmu.write(state.registers.getWord(Registers.Word.HL), (val >> 1) | carry);
 
     // Set carry flag to the least significant bit of the original register value
     state.registers.F.C = (val & 1) == 1;
 
-    state.registers.F.Z = state.memory.read(state.registers.getWord(Registers.Word.HL)) == 0;
+    state.registers.F.Z = state.mmu.read(state.registers.getWord(Registers.Word.HL)) == 0;
     state.registers.F.N = false;
     state.registers.F.H = false;
 
@@ -1303,15 +1197,15 @@ pub fn rrc_r8(state: *GameBoyState, r8: Registers.Byte) u32 {
 
 /// Rotates the value of memory location specified by HL right and sets the carry flag
 pub fn rrc_vhl(state: *GameBoyState) u32 {
-    const val = state.memory.read(state.registers.getWord(Registers.Word.HL));
+    const val = state.mmu.read(state.registers.getWord(Registers.Word.HL));
 
     // Write the rotated value to memory
-    state.memory.write(state.registers.getWord(Registers.Word.HL), (val >> 1) | (val << 7));
+    state.mmu.write(state.registers.getWord(Registers.Word.HL), (val >> 1) | (val << 7));
 
     // Set carry flag to the least significant bit of the original register value
     state.registers.F.C = (val & 1) == 1;
 
-    state.registers.F.Z = state.memory.read(state.registers.getWord(Registers.Word.HL)) == 0;
+    state.registers.F.Z = state.mmu.read(state.registers.getWord(Registers.Word.HL)) == 0;
     state.registers.F.N = false;
     state.registers.F.H = false;
 
@@ -1350,8 +1244,8 @@ pub fn rst_vec(state: *GameBoyState, vec: u16) u32 {
             state.registers.SP -= 2;
 
             // Write high and low bytes to stack
-            state.memory.write(state.registers.SP + 1, high);
-            state.memory.write(state.registers.SP, low);
+            state.mmu.write(state.registers.SP + 1, high);
+            state.mmu.write(state.registers.SP, low);
 
             // jump to the new address
             state.registers.PC = vec;
@@ -1382,7 +1276,7 @@ pub fn sbc_a_r8(state: *GameBoyState, r8: Registers.Byte) u32 {
 
 /// Subtract the value in memory at the address in register HL from register A
 pub fn sbc_a_vhl(state: *GameBoyState) u32 {
-    const val = state.memory.read(state.registers.getWord(Registers.Word.HL));
+    const val = state.mmu.read(state.registers.getWord(Registers.Word.HL));
     const carry = @as(u8, @as(u1, @bitCast(state.registers.F.C)));
 
     const borrow, const overflow = @subWithOverflow(state.registers.A, val +% carry);
@@ -1431,7 +1325,7 @@ pub fn set_u3_r8(state: *GameBoyState, comptime vu3: u3, r8: Registers.Byte) u32
 }
 
 pub fn set_u3_vhl(state: *GameBoyState, comptime vu3: u3) u32 {
-    state.memory.write(state.registers.getWord(Registers.Word.HL), state.memory.read(state.registers.getWord(Registers.Word.HL)) | (1 << vu3));
+    state.mmu.write(state.registers.getWord(Registers.Word.HL), state.mmu.read(state.registers.getWord(Registers.Word.HL)) | (1 << vu3));
     return MCycle * 4;
 }
 
@@ -1447,11 +1341,11 @@ pub fn sla_r8(state: *GameBoyState, r8: Registers.Byte) u32 {
 }
 
 pub fn sla_vhl(state: *GameBoyState) u32 {
-    const val = state.memory.read(state.registers.getWord(Registers.Word.HL));
+    const val = state.mmu.read(state.registers.getWord(Registers.Word.HL));
     const carry = val & 0x80 != 0;
-    state.memory.write(state.registers.getWord(Registers.Word.HL), val << 1);
+    state.mmu.write(state.registers.getWord(Registers.Word.HL), val << 1);
     state.registers.F.C = carry;
-    state.registers.F.Z = state.memory.read(state.registers.getWord(Registers.Word.HL)) == 0;
+    state.registers.F.Z = state.mmu.read(state.registers.getWord(Registers.Word.HL)) == 0;
     state.registers.F.N = false;
     state.registers.F.H = false;
     return MCycle * 4;
@@ -1470,12 +1364,12 @@ pub fn sra_r8(state: *GameBoyState, r8: Registers.Byte) u32 {
 }
 
 pub fn sra_vhl(state: *GameBoyState) u32 {
-    const val = state.memory.read(state.registers.getWord(Registers.Word.HL));
+    const val = state.mmu.read(state.registers.getWord(Registers.Word.HL));
     const carry = val & 0x1 != 0;
     // Shift right but keep bit 7 unchanged
-    state.memory.write(state.registers.getWord(Registers.Word.HL), (val >> 1) | (val & 0x80));
+    state.mmu.write(state.registers.getWord(Registers.Word.HL), (val >> 1) | (val & 0x80));
     state.registers.F.C = carry;
-    state.registers.F.Z = state.memory.read(state.registers.getWord(Registers.Word.HL)) == 0;
+    state.registers.F.Z = state.mmu.read(state.registers.getWord(Registers.Word.HL)) == 0;
     state.registers.F.N = false;
     state.registers.F.H = false;
     return MCycle * 4;
@@ -1493,11 +1387,11 @@ pub fn srl_r8(state: *GameBoyState, r8: Registers.Byte) u32 {
 }
 
 pub fn srl_vhl(state: *GameBoyState) u32 {
-    const val = state.memory.read(state.registers.getWord(Registers.Word.HL));
+    const val = state.mmu.read(state.registers.getWord(Registers.Word.HL));
     const carry = val & 0x1 != 0;
-    state.memory.write(state.registers.getWord(Registers.Word.HL), val >> 1);
+    state.mmu.write(state.registers.getWord(Registers.Word.HL), val >> 1);
     state.registers.F.C = carry;
-    state.registers.F.Z = state.memory.read(state.registers.getWord(Registers.Word.HL)) == 0;
+    state.registers.F.Z = state.mmu.read(state.registers.getWord(Registers.Word.HL)) == 0;
     state.registers.F.N = false;
     state.registers.F.H = false;
     return MCycle * 4;
@@ -1523,7 +1417,7 @@ pub fn sub_a_r8(state: *GameBoyState, r8: Registers.Byte) u32 {
 }
 
 pub fn sub_a_vhl(state: *GameBoyState) u32 {
-    const val = state.memory.read(state.registers.getWord(Registers.Word.HL));
+    const val = state.mmu.read(state.registers.getWord(Registers.Word.HL));
     const result, const overflow = @subWithOverflow(state.registers.A, val);
     state.registers.setByte(Registers.Byte.A, result);
     state.registers.F.C = overflow == 1;
@@ -1558,10 +1452,10 @@ pub fn swap_r8(state: *GameBoyState, r8: Registers.Byte) u32 {
 }
 
 pub fn swap_vhl(state: *GameBoyState) u32 {
-    const val = state.memory.read(state.registers.getWord(Registers.Word.HL));
-    state.memory.write(state.registers.getWord(Registers.Word.HL), (val >> 4) | (val << 4));
+    const val = state.mmu.read(state.registers.getWord(Registers.Word.HL));
+    state.mmu.write(state.registers.getWord(Registers.Word.HL), (val >> 4) | (val << 4));
 
-    state.registers.F.Z = state.memory.read(state.registers.getWord(Registers.Word.HL)) == 0;
+    state.registers.F.Z = state.mmu.read(state.registers.getWord(Registers.Word.HL)) == 0;
     state.registers.F.N = false;
     state.registers.F.H = false;
     state.registers.F.C = false;
@@ -1582,7 +1476,7 @@ pub fn xor_a_r8(state: *GameBoyState, r8: Registers.Byte) u32 {
 }
 
 pub fn xor_a_vhl(state: *GameBoyState) u32 {
-    const val = state.memory.read(state.registers.getWord(Registers.Word.HL));
+    const val = state.mmu.read(state.registers.getWord(Registers.Word.HL));
     state.registers.A = state.registers.A ^ val;
 
     state.registers.F.Z = state.registers.A == 0;
@@ -1605,21 +1499,14 @@ pub fn xor_a_n8(state: *GameBoyState, val: *const u8) u32 {
     return MCycle * 2;
 }
 
-pub fn step(state: *GameBoyState) u32 {
-    const opcode = fetch(state);
-    const cycles = execute(state, opcode);
-    state.cycles += cycles;
-    return cycles;
-}
-
 pub fn fetch(state: *GameBoyState) u8 {
-    const byte = state.memory.read(state.registers.PC);
+    const byte = state.mmu.read(state.registers.PC);
     state.registers.PC +%= 1;
     return byte;
 }
 
 pub fn fetch16(state: *GameBoyState) u16 {
-    const val = state.memory.read16(state.registers.PC);
+    const val = state.mmu.read16(state.registers.PC);
     state.registers.PC +%= 2;
     return val;
 }
@@ -2152,30 +2039,23 @@ pub fn execute(state: *GameBoyState, opcode: u8) u32 {
 }
 
 pub fn main() !void {
+    var gameBoyState: GameBoyState = GameBoyState.init(null);
+
+    // Load bootrom to memory
+    const data = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, "src/dmg_boot.bin", 256);
+    defer std.heap.page_allocator.free(data);
+
+    for (data, 0..) |byte, index| {
+        gameBoyState.mmu.write(@as(u16, @intCast(index)), byte);
+    }
+
     {
         errdefer |err| if (err == error.SdlError) std.log.err("SDL error: {s}", .{c.SDL_GetError()});
 
-        // For programs that provide their own entry points instead of relying on SDL's main function
-        // macro magic, 'SDL_SetMainReady' should be called before calling 'SDL_Init'.
-        c.SDL_SetMainReady();
+        const window, const renderer = try graphics.createWindow();
+        defer graphics.destroyWindow(window, renderer);
 
-        _ = c.SDL_SetAppMetadata("ZigZagZog", "0.0.1", "com.zigzagzog.zigzagzog");
-        if (!c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_AUDIO | c.SDL_INIT_GAMEPAD)) {
-            return error.SdlError;
-        }
-        defer c.SDL_Quit();
-
-        const window = c.SDL_CreateWindow("ZigZagZog", 160, 144, 0);
-        if (window == null) {
-            return error.SdlError;
-        }
-        defer c.SDL_DestroyWindow(window);
-
-        const renderer = c.SDL_CreateRenderer(window, null);
-        if (renderer == null) {
-            return error.SdlError;
-        }
-        defer _ = c.SDL_DestroyRenderer(renderer);
+        const framebufferTexture = c.SDL_CreateTexture(@ptrCast(renderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 160, 144);
 
         mainLoop: while (true) {
             var ev: c.SDL_Event = undefined;
@@ -2184,72 +2064,14 @@ pub fn main() !void {
                     break :mainLoop;
                 }
             }
-            const now = @divExact(@as(f32, @floatFromInt(c.SDL_GetTicks())), 1000.0);
-            const red = 0.5 + 0.5 * std.math.sin(now);
-            const green = 0.5 + 0.5 * std.math.sin(now + std.math.pi * 2 / 3.0);
-            const blue = 0.5 + 0.5 * std.math.sin(now + std.math.pi * 4 / 3.0);
-            _ = c.SDL_SetRenderDrawColorFloat(renderer, red, green, blue, c.SDL_ALPHA_OPAQUE_FLOAT);
 
-            _ = c.SDL_RenderClear(renderer);
-            _ = c.SDL_RenderPresent(renderer);
+            gameBoyState.step();
+            _ = c.SDL_UpdateTexture(framebufferTexture, null, &gameBoyState.ppu.framebuffer, 160 * @sizeOf(u32));
+            std.log.info("{any}", .{gameBoyState.registers});
+
+            _ = c.SDL_RenderClear(@ptrCast(renderer));
+            _ = c.SDL_RenderTexture(@ptrCast(renderer), framebufferTexture, null, null);
+            _ = c.SDL_RenderPresent(@ptrCast(renderer));
         }
     }
-
-    var gameBoyState: GameBoyState = GameBoyState.init(null);
-
-    // Load bootrom to memory
-    const data = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, "src/dmg_boot.bin", 256);
-    defer std.heap.page_allocator.free(data);
-
-    for (data, 0..) |byte, index| {
-        gameBoyState.memory.write(@as(u16, @intCast(index)), byte);
-    }
-
-    while (true) {
-        const cycles = step(&gameBoyState);
-        // sleep for the number of nanoseconds equivalent to the number of cycles
-        std.time.sleep((cycles / CPUClockRate) * std.time.ns_per_s);
-        std.log.info("{any}", .{gameBoyState.registers});
-    }
 }
-
-// pub fn main() !void {
-//     // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
-//     std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
-
-//     // stdout is for the actual output of your application, for example if you
-//     // are implementing gzip, then only the compressed bytes should be sent to
-//     // stdout, not any debugging messages.
-//     const stdout_file = std.io.getStdOut().writer();
-//     var bw = std.io.bufferedWriter(stdout_file);
-//     const stdout = bw.writer();
-
-//     try stdout.print("Run `zig build test` to run the tests.\n", .{});
-
-//     try bw.flush(); // Don't forget to flush!
-// }
-
-// test "simple test" {
-//     var list = std.ArrayList(i32).init(std.testing.allocator);
-//     defer list.deinit(); // Try commenting this out and see if zig detects the memory leak!
-//     try list.append(42);
-//     try std.testing.expectEqual(@as(i32, 42), list.pop());
-// }
-
-// test "use other module" {
-//     try std.testing.expectEqual(@as(i32, 150), lib.add(100, 50));
-// }
-
-// test "fuzz example" {
-//     const Context = struct {
-//         fn testOne(context: @This(), input: []const u8) anyerror!void {
-//             _ = context;
-//             // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
-//             try std.testing.expect(!std.mem.eql(u8, "canyoufindme", input));
-//         }
-//     };
-//     try std.testing.fuzz(Context{}, Context.testOne, .{});
-// }
-
-/// This imports the separate module containing `root.zig`. Take a look in `build.zig` for details.
-const lib = @import("zig_gbc_lib");
