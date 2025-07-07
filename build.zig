@@ -42,14 +42,18 @@ pub fn build(b: *std.Build) void {
 
     exe.root_module.linkLibrary(sdl.artifact("SDL3"));
 
-    // Add Wayland libraries (for Wayland backend)
-    // exe.linkSystemLibrary("wayland-client");
-    // exe.linkSystemLibrary("wayland-egl");
-    // exe.linkSystemLibrary("wayland-cursor");
-    // exe.linkSystemLibrary("xkbcommon");
+    // Link additional system deps if we're on linux
 
-    // Add X11 libraries (for X11 backend fallback)
-    exe.linkSystemLibrary("X11");
+    if (std.Target.isGnuLibC(target.result)) {
+        // Add Wayland libraries (for Wayland backend)
+        // exe.linkSystemLibrary("wayland-client");
+        // exe.linkSystemLibrary("wayland-egl");
+        // exe.linkSystemLibrary("wayland-cursor");
+        // exe.linkSystemLibrary("xkbcommon");
+
+        // Add X11 libraries (for X11 backend fallback)
+        exe.linkSystemLibrary("X11");
+    }
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
