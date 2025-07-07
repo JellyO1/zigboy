@@ -37,7 +37,7 @@ const LCDStatus = packed struct(u8) {
     _: u1 = 0,
 };
 
-const RGBA = struct {
+pub const RGBA = packed struct {
     r: u8,
     g: u8,
     b: u8,
@@ -179,6 +179,38 @@ pub const PPU = struct {
     }
 
     pub fn renderScanline(self: *PPU) void {
+        for (0..160) |x| {
+            //const as_u8: u8 = @bitCast(self.lcdc.*);
+            //std.debug.print("{b:0>8}\n", .{as_u8});
+            //if (self.lcdc.BgWinEnable) {
+            // const bgX = (x + @as(usize, @intCast(self.bgScrollX.*))) % 256;
+            // const bgY = (self.scanline.* + @as(usize, @intCast(self.bgScrollY.*))) % 256;
+            const bgX = x;
+            const bgY = self.scanline.*;
+
+            const tileX = bgX % 8;
+            const tileY = bgY % 8;
+
+            const tileMapAddr: u16 = if (self.lcdc.BgTileMapArea) 0x9C00 else 0x9800;
+            const tileIndex = self.mmu.read(tileMapAddr + @as(u16, @intCast(tileY * 32 + tileY)));
+
+            const tile = self.mmu.tileset[tileIndex];
+
+            const color = tile.data[tileY][tileX];
+            // const palette = self.bgp;
+            // const colorValue = palette.get(color);
+
+            const frameBufferIndex = x + @as(usize, @intCast((self.scanline.*))) * 160;
+            if (frameBufferIndex < self.framebuffer.len) {
+                self.framebuffer[frameBufferIndex] = PaletteColors[color];
+            }
+            //}
+
+            if (self.lcdc.WinEnable) {}
+        }
+    }
+
+    pub fn renderBackground(self: *PPU) void {
         for (0..20) |renderTileIndex| {
             const tileMapAddr: u16 = if (self.lcdc.BgTileMapArea) 0x9800 else 0x9C00;
 

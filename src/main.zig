@@ -2046,26 +2046,139 @@ pub fn execute(state: *GameBoyState, opcode: u8) u32 {
     };
 }
 
-pub fn main() !void {
-    var gameBoyState: GameBoyState = GameBoyState.init(null);
+const RGBA = @import("ppu.zig").RGBA;
 
-    // Load bootrom to memory
-    const data = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, "src/dmg_boot.bin", 256);
-    defer std.heap.page_allocator.free(data);
+pub fn debugTileData(state: *GameBoyState, buffer: *[192 * 128]RGBA) void {
+    const colors = [4]RGBA{
+        .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+        .{ .r = 192, .g = 192, .b = 192, .a = 255 },
+        .{ .r = 96, .g = 96, .b = 96, .a = 255 },
+        .{ .r = 0, .g = 0, .b = 0, .a = 255 },
+    };
 
-    for (data, 0..) |byte, index| {
-        gameBoyState.mmu.write(@as(u16, @intCast(index)), byte);
+    const tilesPerRow = 24; // 24 tiles per row
+    const tileSize = 8; // 8x8 pixels per tile
+
+    for (0x8000..0x97FF) |addr| {
+        const normalizedAddr = addr - 0x8000;
+
+        if (normalizedAddr % 2 != 0) continue;
+        //const row = normalizedAddr / 2;
+
+        const tileIndex = normalizedAddr / 16; // Each tile is 16 bytes, 2 bytes per each row of pixels (8 pixels)
+        const rowInTile = (normalizedAddr % 16) / 2; // 0..7
+
+        const tileX = tileIndex % tilesPerRow; // 0..23
+        const tileY = tileIndex / tilesPerRow; // 0..15
+
+        const highByte = state.mmu.read(@intCast(addr));
+        const lowByte = state.mmu.read(@intCast(addr + 1));
+
+        // Loop through every pixel in the row
+        inline for (0..8) |pixelIndex| {
+            const bitIndex: u8 = 1 << (7 - pixelIndex);
+            const lowBit: u8 = lowByte & bitIndex;
+            const highBit: u8 = highByte & bitIndex;
+            const colorIndex = if (highBit == 0) @as(u2, 0b00) else @as(u2, 0b10) | if (lowBit == 0) @as(u2, 0b00) else @as(u2, 0b01);
+            const color = colors[colorIndex];
+
+            const pixelX = tileX * tileSize + pixelIndex;
+            const pixelY = tileY * tileSize + rowInTile;
+            const bufferIndex = pixelY * (tilesPerRow * tileSize) + pixelX;
+            buffer[bufferIndex] = color;
+        }
     }
+}
+
+pub fn debugTileset(state: *GameBoyState, buffer: *[192 * 128]RGBA) void {
+    const colors = [4]RGBA{
+        .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+        .{ .r = 192, .g = 192, .b = 192, .a = 255 },
+        .{ .r = 96, .g = 96, .b = 96, .a = 255 },
+        .{ .r = 0, .g = 0, .b = 0, .a = 255 },
+    };
+
+    const tilesPerRow = 24; // 24 tiles per row
+    const tileSize = 8; // 8x8 pixels per tile
+
+    for (state.mmu.tileset, 0..) |tile, tileIndex| {
+        const tileX = tileIndex % tilesPerRow; // 0..23
+        const tileY = tileIndex / tilesPerRow; // 0..15
+
+        // Loop through every pixel
+        inline for (0..8) |pixelXIndex| {
+            inline for (0..8) |pixelYIndex| {
+                const colorIndex = tile.data[pixelYIndex][pixelXIndex];
+                const color = colors[colorIndex];
+
+                const pixelX = tileX * tileSize + pixelXIndex;
+                const pixelY = tileY * tileSize + pixelYIndex;
+                const bufferIndex = pixelY * (tilesPerRow * tileSize) + pixelX;
+                buffer[bufferIndex] = color;
+            }
+        }
+    }
+}
+
+pub fn debugTilemap(state: *GameBoyState, buffer: *[256 * 256]RGBA) void {
+    const colors = [4]RGBA{
+        .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+        .{ .r = 192, .g = 192, .b = 192, .a = 255 },
+        .{ .r = 96, .g = 96, .b = 96, .a = 255 },
+        .{ .r = 0, .g = 0, .b = 0, .a = 255 },
+    };
+
+    const tilesPerRow = 32; // 32 tiles per row
+    const tileSize = 8; // 8x8 pixels per tile
+
+    for (0x9800..0x9FFF) |addr| {
+        const tileIndex = state.mmu.read(@intCast(addr));
+
+        const tileX = tileIndex % tilesPerRow; // 0..32
+        const tileY = tileIndex / tilesPerRow; // 0..32
+
+        const tile = state.mmu.tileset[tileIndex];
+
+        // Loop through every pixel
+        inline for (0..8) |pixelXIndex| {
+            inline for (0..8) |pixelYIndex| {
+                const colorIndex = tile.data[pixelYIndex][pixelXIndex];
+                const color = colors[colorIndex];
+
+                const pixelX = tileX * tileSize + pixelXIndex;
+                const pixelY = tileY * tileSize + pixelYIndex;
+                const bufferIndex = pixelY * (tilesPerRow * tileSize) + pixelX;
+                buffer[bufferIndex] = color;
+            }
+        }
+    }
+}
+
+pub fn main() !void {
+
+    // var gameBoyState: GameBoyState = try GameBoyState.init(null);
 
     {
         errdefer |err| if (err == error.SdlError) std.log.err("SDL error: {s}", .{c.SDL_GetError()});
 
-        const window, const renderer = try graphics.createWindow();
-        defer graphics.destroyWindow(window, renderer);
+        try graphics.init();
 
-        const framebufferTexture = c.SDL_CreateTexture(@ptrCast(renderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 160, 144);
+        const scale = 2;
+
+        const mainWindow, const mainRenderer = try graphics.createWindow(@as([]const u8, "ZigBoy"), (160 + 192 + 256) * scale, 256 * scale);
+        defer graphics.destroyWindow(mainWindow, mainRenderer);
+        const framebufferTexture = c.SDL_CreateTexture(@ptrCast(mainRenderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 160, 144);
+        const tileTexture = c.SDL_CreateTexture(@ptrCast(mainRenderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 192, 128);
+        const tilemapTexture = c.SDL_CreateTexture(@ptrCast(mainRenderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 256, 256);
+
+        var tileBuffer: ?*anyopaque = null;
+        var tilePitch: c_int = 0;
+
+        var tilemapBuffer: ?*anyopaque = null;
+        var tilemapPitch: c_int = 0;
 
         mainLoop: while (true) {
+            const start = c.SDL_GetPerformanceCounter();
             var ev: c.SDL_Event = undefined;
             while (c.SDL_PollEvent(&ev)) {
                 if (ev.type == c.SDL_EVENT_QUIT) {
@@ -2073,13 +2186,31 @@ pub fn main() !void {
                 }
             }
 
-            gameBoyState.step();
-            _ = c.SDL_UpdateTexture(framebufferTexture, null, &gameBoyState.ppu.framebuffer, 160 * @sizeOf(u32));
-            std.log.info("{any}", .{gameBoyState.registers});
+            // gameBoyState.step();
 
-            _ = c.SDL_RenderClear(@ptrCast(renderer));
-            _ = c.SDL_RenderTexture(@ptrCast(renderer), framebufferTexture, null, null);
-            _ = c.SDL_RenderPresent(@ptrCast(renderer));
+            _ = c.SDL_RenderClear(@ptrCast(mainRenderer));
+            _ = c.SDL_UpdateTexture(framebufferTexture, null, &gameBoyState.ppu.framebuffer, 160 * @sizeOf(RGBA));
+            //std.log.info("{any}", .{gameBoyState.registers});
+            _ = c.SDL_RenderTexture(@ptrCast(mainRenderer), framebufferTexture, null, &c.SDL_FRect{ .x = 0, .y = 0, .w = 160 * scale, .h = 144 * scale });
+
+            _ = c.SDL_LockTexture(tileTexture, null, &tileBuffer, &tilePitch);
+            // debugTileData(&gameBoyState, @ptrCast(@alignCast(tileBuffer)));
+            debugTileset(&gameBoyState, @ptrCast(@alignCast(tileBuffer)));
+            _ = c.SDL_UnlockTexture(tileTexture);
+            _ = c.SDL_RenderTexture(@ptrCast(mainRenderer), tileTexture, null, &c.SDL_FRect{ .x = 160 * scale, .y = 0, .w = 192 * scale, .h = 144 * scale });
+
+            _ = c.SDL_LockTexture(tilemapTexture, null, &tilemapBuffer, &tilemapPitch);
+            debugTilemap(&gameBoyState, @ptrCast(@alignCast(tilemapBuffer)));
+            _ = c.SDL_UnlockTexture(tilemapTexture);
+            _ = c.SDL_RenderTexture(@ptrCast(mainRenderer), tilemapTexture, null, &c.SDL_FRect{ .x = (160 + 192) * scale, .y = 0, .w = 256 * scale, .h = 256 * scale });
+
+            _ = c.SDL_RenderPresent(@ptrCast(mainRenderer));
+
+            const end = c.SDL_GetPerformanceCounter();
+            const elapsed: f64 = @as(f64, @floatFromInt(end - start)) / @as(f64, @floatFromInt(c.SDL_GetPerformanceFrequency()));
+            if (elapsed != 0) {
+                std.debug.print("fps: {}\n", .{@as(u64, 1.0) / elapsed});
+            }
         }
     }
 }
