@@ -172,8 +172,16 @@ pub const GameBoyState = struct {
     /// Halt
     halt: bool,
 
-    pub fn init(flags: ?Flags) GameBoyState {
-        var mmu = MMU.init();
+    pub fn init(flags: ?Flags) !GameBoyState {
+        // Load bootrom to memory
+        const boot_rom = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, "src/dmg_boot.bin", 256);
+        defer std.heap.page_allocator.free(boot_rom);
+        const boot_rom_slice = boot_rom[0..0x100].*;
+
+        const game_rom = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, "src/cpu_instrs.gb", 1024 * 1024);
+        defer std.heap.page_allocator.free(game_rom);
+
+        var mmu = MMU.init(boot_rom_slice, game_rom);
         return .{
             .registers = Registers.init(flags),
             .mmu = mmu,
@@ -186,7 +194,7 @@ pub const GameBoyState = struct {
     }
 
     pub fn initTest(registers: Registers, ime: bool, ei_delay: bool) GameBoyState {
-        var mmu = MMU.init();
+        var mmu = MMU.init(null, null);
         return .{
             .registers = registers,
             .mmu = mmu,
@@ -205,7 +213,7 @@ pub const GameBoyState = struct {
         self.ppu.step(cycles);
 
         // sleep for the number of nanoseconds equivalent to the number of cycles
-        std.time.sleep((cycles / CPUClockRate) * std.time.ns_per_s);
+        // std.time.sleep((cycles / CPUClockRate) * std.time.ns_per_s);
     }
 };
 
