@@ -151,30 +151,34 @@ pub const MMU = struct {
                 // If the address is outside of the tileset range, return
                 if (addr >= 0x9800) return;
 
-                // A tile is 8x8 with each row being 2 bytes, that is 16 bytes total.
-                const tileIndex = (addr - 0x8000) / 16;
-                // Every two bytes is a row
-                const rowIndex = ((addr - 0x8000) % 16) / 2;
+                // Normalize addr 0..6144
+                const normAddr = addr - 0x8000;
+
+                // A tile is 8x8 with each row being 2 bytes, that is 16 bytes total. 0..383
+                const tileIndex = normAddr / 16;
+                // Every two bytes is a row. 0..7
+                const tileY = (normAddr % 16) / 2;
 
                 // We need both bytes of the row to decode the tile data
                 // The first byte (low bits) is at the current address
                 // The second byte (high bits) is at the next address
-                if ((addr - 0x8000) % 2 == 0) {
+                if (normAddr % 2 == 0) {
                     // This is the first byte of the row, we need to wait for the second byte
                     return;
                 }
 
                 // Now we have both bytes, decode the row
-                const lowByte = self.vram[addr - 0x8000 - 1]; // Previous byte
                 const highByte = value; // Current byte
+                const lowByte = self.vram[normAddr - 1]; // Previous byte
 
                 // Loop through every pixel in the row
-                inline for (0..8) |pixelIndex| {
-                    const bitIndex: u8 = 1 << (7 - pixelIndex);
+                inline for (0..8) |tileX| {
+                    const bitIndex: u8 = 1 << (7 - tileX);
                     const lowBit: u8 = lowByte & bitIndex;
                     const highBit: u8 = highByte & bitIndex;
-                    const color: u2 = @as(u2, @intCast(lowBit)) | (@as(u2, @intCast(highBit)) << 1);
-                    self.tileset[tileIndex].data[rowIndex][pixelIndex] = color;
+                    const color = if (highBit == 0) @as(u2, 0b00) else @as(u2, 0b10) | if (lowBit == 0) @as(u2, 0b00) else @as(u2, 0b01);
+                    // const color: u2 = @as(u2, @truncate(highBit)) << 1 | @as(u2, @truncate(lowBit));
+                    self.tileset[tileIndex].data[tileY][tileX] = color;
                 }
             },
             0xA000...0xBFFF => self.external_ram[addr - 0xA000] = value,

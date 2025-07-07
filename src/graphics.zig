@@ -10,7 +10,7 @@ const c = @cImport({
     @cInclude("SDL3/SDL_main.h");
 });
 
-pub fn createWindow() !struct { *c.SDL_Window, *c.SDL_Renderer } {
+pub fn init() !void {
     // For programs that provide their own entry points instead of relying on SDL's main function
     // macro magic, 'SDL_SetMainReady' should be called before calling 'SDL_Init'.
     c.SDL_SetMainReady();
@@ -19,8 +19,10 @@ pub fn createWindow() !struct { *c.SDL_Window, *c.SDL_Renderer } {
     if (!c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_AUDIO | c.SDL_INIT_GAMEPAD)) {
         return error.SdlError;
     }
+}
 
-    const window = if (c.SDL_CreateWindow("ZigZagZog", 160, 144, 0)) |w| w else {
+pub fn createWindow(title: []const u8, w: c_int, h: c_int) !struct { *c.SDL_Window, *c.SDL_Renderer } {
+    const window = if (c.SDL_CreateWindow(title.ptr, w, h, 0)) |l| l else {
         return error.SdlError;
     };
 
