@@ -31,6 +31,10 @@ pub const Tile = struct {
 
 /// Memory Management Unit
 pub const MMU = struct {
+    // Boot ROM (256 bytes)
+    boot_rom: [0x100]u8,
+    // Boot ROM enabled
+    boot_rom_enabled: bool,
     // ROM bank 0 (16KB)
     rom_bank0: [0x4000]u8,
     // ROM bank 1-N (16KB), used for bank switching
@@ -60,10 +64,15 @@ pub const MMU = struct {
     // Memory Bank Controller
     // mbc: ?MBC = null,
 
-    pub fn init() MMU {
+    pub fn init(boot_rom: ?[0x100]u8, game_rom: ?[]u8) MMU {
+        const rom_bank0 = if (game_rom) |rom| rom[0x0000..0x4000].* else std.mem.zeroes([0x4000]u8);
+        const rom_bank_n = if (game_rom) |rom| rom[0x4000..0x8000].* else std.mem.zeroes([0x4000]u8);
+
         return .{
-            .rom_bank0 = std.mem.zeroes([0x4000]u8),
-            .rom_bank_n = std.mem.zeroes([0x4000]u8),
+            .boot_rom = boot_rom orelse std.mem.zeroes([0x100]u8),
+            .boot_rom_enabled = if (boot_rom == null) false else true,
+            .rom_bank0 = rom_bank0,
+            .rom_bank_n = rom_bank_n,
             .vram = std.mem.zeroes([0x2000]u8),
             .external_ram = std.mem.zeroes([0x2000]u8),
             .work_ram = std.mem.zeroes([0x2000]u8),
@@ -79,7 +88,14 @@ pub const MMU = struct {
 
     pub fn read(self: *MMU, addr: u16) u8 {
         return switch (addr) {
-            0x0000...0x3FFF => self.rom_bank0[addr],
+            0x0000...0x3FFF => {
+                if (self.boot_rom_enabled and addr < 0x0100) {
+                    return self.boot_rom[addr]; // Boot ROM
+                }
+
+                // TODO: Handle with MBC
+                return self.rom_bank0[addr]; // ROM Bank 0
+            },
             0x4000...0x7FFF => self.rom_bank_n[addr - 0x4000],
             0x8000...0x9FFF => self.vram[addr - 0x8000],
             0xA000...0xBFFF => self.external_ram[addr - 0xA000],
@@ -97,7 +113,13 @@ pub const MMU = struct {
 
     pub fn readPtr(self: *MMU, addr: u16) *u8 {
         return switch (addr) {
-            0x0000...0x3FFF => &self.rom_bank0[addr],
+            0x0000...0x3FFF => {
+                if (self.boot_rom_enabled and addr < 0x0100) {
+                    return &self.boot_rom[addr]; // Boot ROM
+                }
+
+                return &self.rom_bank0[addr]; // ROM Bank 0
+            },
             0x4000...0x7FFF => &self.rom_bank_n[addr - 0x4000],
             0x8000...0x9FFF => &self.vram[addr - 0x8000],
             0xA000...0xBFFF => &self.external_ram[addr - 0xA000],
@@ -164,7 +186,17 @@ pub const MMU = struct {
             // 0xFE00...0xFE9F => self.oam[addr - 0xFE00] = value,
             // 0xFEA0...0xFEFF => {}, // Not Usable
             0xFE00...0xFEFF => self.oam[addr - 0xFE00] = value,
-            0xFF00...0xFF7F => self.io_registers[addr - 0xFF00] = value,
+            0xFF00...0xFF7F => {
+                self.io_registers[addr - 0xFF00] = value;
+
+                if (self.io_registers[0xFF02 - 0xFF00] == 0x81) {
+                    std.debug.print("{c}", .{self.io_registers[0xFF01 - 0xFF00]});
+                }
+
+                if (addr == 0xFF50) {
+                    self.boot_rom_enabled = value == 0x01; // 0x01 = Boot ROM enabled, 0x00 = Boot ROM disabled
+                }
+            },
             0xFF80...0xFFFE => self.hram[addr - 0xFF80] = value,
             0xFFFF => self.ie_register = @as(InterruptFlags, @bitCast(value)),
             // else => {},
