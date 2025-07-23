@@ -11,6 +11,7 @@ const c = @cImport({
 const graphics = @import("graphics.zig");
 const PPU = @import("ppu.zig").PPU;
 const MMU = @import("mmu.zig").MMU;
+const tracy = @import("tracy");
 
 // Two types of cycles: T states and M cycles
 // M cycles (“machine” cycles, 1:4 clock) are the base unit of CPU instructions
@@ -2178,7 +2179,8 @@ pub fn main() !void {
         var tilemapPitch: c_int = 0;
 
         mainLoop: while (true) {
-            const start = c.SDL_GetPerformanceCounter();
+            tracy.frameMark();
+
             var ev: c.SDL_Event = undefined;
             while (c.SDL_PollEvent(&ev)) {
                 if (ev.type == c.SDL_EVENT_QUIT) {
@@ -2186,30 +2188,28 @@ pub fn main() !void {
                 }
             }
 
-            // gameBoyState.step();
+            gameBoyState.step();
+            std.debug.print("{}\n", .{gameBoyState.registers});
 
-            _ = c.SDL_RenderClear(@ptrCast(mainRenderer));
-            _ = c.SDL_UpdateTexture(framebufferTexture, null, &gameBoyState.ppu.framebuffer, 160 * @sizeOf(RGBA));
-            //std.log.info("{any}", .{gameBoyState.registers});
-            _ = c.SDL_RenderTexture(@ptrCast(mainRenderer), framebufferTexture, null, &c.SDL_FRect{ .x = 0, .y = 0, .w = 160 * scale, .h = 144 * scale });
+            // HACK: Only render and present at the end of the last VBlank scanline
+            if (gameBoyState.ppu.mode == .VBlank and gameBoyState.ppu.scanline.* == 144) {
+                _ = c.SDL_RenderClear(@ptrCast(mainRenderer));
+                _ = c.SDL_UpdateTexture(framebufferTexture, null, &gameBoyState.ppu.framebuffer, 160 * @sizeOf(RGBA));
+                //std.log.info("{any}", .{gameBoyState.registers});
+                _ = c.SDL_RenderTexture(@ptrCast(mainRenderer), framebufferTexture, null, &c.SDL_FRect{ .x = 0, .y = 0, .w = 160 * scale, .h = 144 * scale });
 
-            _ = c.SDL_LockTexture(tileTexture, null, &tileBuffer, &tilePitch);
-            // debugTileData(&gameBoyState, @ptrCast(@alignCast(tileBuffer)));
-            debugTileset(&gameBoyState, @ptrCast(@alignCast(tileBuffer)));
-            _ = c.SDL_UnlockTexture(tileTexture);
-            _ = c.SDL_RenderTexture(@ptrCast(mainRenderer), tileTexture, null, &c.SDL_FRect{ .x = 160 * scale, .y = 0, .w = 192 * scale, .h = 144 * scale });
+                _ = c.SDL_LockTexture(tileTexture, null, &tileBuffer, &tilePitch);
+                // debugTileData(&gameBoyState, @ptrCast(@alignCast(tileBuffer)));
+                debugTileset(&gameBoyState, @ptrCast(@alignCast(tileBuffer)));
+                _ = c.SDL_UnlockTexture(tileTexture);
+                _ = c.SDL_RenderTexture(@ptrCast(mainRenderer), tileTexture, null, &c.SDL_FRect{ .x = 160 * scale, .y = 0, .w = 192 * scale, .h = 144 * scale });
 
-            _ = c.SDL_LockTexture(tilemapTexture, null, &tilemapBuffer, &tilemapPitch);
-            debugTilemap(&gameBoyState, @ptrCast(@alignCast(tilemapBuffer)));
-            _ = c.SDL_UnlockTexture(tilemapTexture);
-            _ = c.SDL_RenderTexture(@ptrCast(mainRenderer), tilemapTexture, null, &c.SDL_FRect{ .x = (160 + 192) * scale, .y = 0, .w = 256 * scale, .h = 256 * scale });
+                _ = c.SDL_LockTexture(tilemapTexture, null, &tilemapBuffer, &tilemapPitch);
+                debugTilemap(&gameBoyState, @ptrCast(@alignCast(tilemapBuffer)));
+                _ = c.SDL_UnlockTexture(tilemapTexture);
+                _ = c.SDL_RenderTexture(@ptrCast(mainRenderer), tilemapTexture, null, &c.SDL_FRect{ .x = (160 + 192) * scale, .y = 0, .w = 256 * scale, .h = 256 * scale });
 
-            _ = c.SDL_RenderPresent(@ptrCast(mainRenderer));
-
-            const end = c.SDL_GetPerformanceCounter();
-            const elapsed: f64 = @as(f64, @floatFromInt(end - start)) / @as(f64, @floatFromInt(c.SDL_GetPerformanceFrequency()));
-            if (elapsed != 0) {
-                std.debug.print("fps: {}\n", .{@as(u64, 1.0) / elapsed});
+                _ = c.SDL_RenderPresent(@ptrCast(mainRenderer));
             }
         }
     }
