@@ -15,6 +15,17 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
+    const sdl = b.dependency("sdl", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const tracy_dep = b.dependency("tracy", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const tracy_mod = tracy_dep.module("tracy");
+
     // We will also create a module for our other entry point, 'main.zig'.
     const exe_mod = b.createModule(.{
         // `root_source_file` is the Zig "entry point" of the module. If a module
@@ -25,6 +36,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .imports = &.{
+            .{ .name = "tracy", .module = tracy_mod },
+        },
     });
 
     // This creates another `std.Build.Step.Compile`, but this one builds an executable
