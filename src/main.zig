@@ -320,7 +320,7 @@ pub fn add_hl_sp(state: *GameBoyState) u32 {
 }
 
 pub fn add_sp_e8(state: *GameBoyState, e8: *const i8) u32 {
-    const u32Result: u32 = @intCast(@as(i32, @intCast(state.registers.SP)) +% e8.*);
+    const u32Result: u32 = std.math.lossyCast(u32, @as(i32, @intCast(state.registers.SP)) +% e8.*);
     const result: u16 = @truncate(u32Result);
 
     state.registers.SP = result;
