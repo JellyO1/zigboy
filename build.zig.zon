@@ -44,6 +44,10 @@
             .url = "https://github.com/tealsnow/zig-tracy/archive/refs/tags/v0.0.9.tar.gz",
             .hash = "tracy-0.0.9-Dn49mw9SAACCtNBeyyb3EOipVIAhYuoDI9bLBi3LDJh6",
         },
+        .cimgui_zig = .{
+            .url = "git+https://github.com/JellyO1/cimgui.zig#b9560ba4ca0e9c8c393dcedd319794a67533c26e",
+            .hash = "cimgui_zig-1.0.0-2XubklQ8XwDWV7JYxK3SH0y_EaFwS1BIs4i4LXC3py67",
+        },
     },
     .paths = .{
         "build.zig",
