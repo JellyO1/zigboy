@@ -1,4 +1,5 @@
 const std = @import("std");
+const cimgui = @import("cimgui_zig");
 
 // Although this function looks imperative, note that its job is to
 // declaratively construct a build graph that will be executed by an external
@@ -20,11 +21,23 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Add a build option for tracy
+    const enable_tracy = b.option(bool, "enable_tracy", "Enable Tracy profiler integration") orelse if (optimize == .Debug) true else false;
+
+    // Only add tracy if enabled
     const tracy_dep = b.dependency("tracy", .{
         .target = target,
         .optimize = optimize,
+        .tracy_enable = enable_tracy,
     });
     const tracy_mod = tracy_dep.module("tracy");
+
+    const cimgui_dep = b.dependency("cimgui_zig", .{
+        .target = target,
+        .optimize = optimize,
+        .platform = cimgui.Platform.SDL3,
+        .renderer = cimgui.Renderer.SDL3Renderer,
+    });
 
     // We will also create a module for our other entry point, 'main.zig'.
     const exe_mod = b.createModule(.{
@@ -48,13 +61,13 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
     exe.linkLibC();
-
-    const sdl = b.dependency("sdl", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
     exe.root_module.linkLibrary(sdl.artifact("SDL3"));
+    exe.linkLibrary(cimgui_dep.artifact("cimgui"));
+
+    if (enable_tracy) {
+        exe.linkLibrary(tracy_dep.artifact("tracy"));
+        exe.linkLibCpp();
+    }
 
     // Link additional system deps if we're on linux
 
