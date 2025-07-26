@@ -1,6 +1,6 @@
 const std = @import("std");
 const GameBoyState = @import("main.zig").GameBoyState;
-const MMU = @import("mmu.zig").MMU;
+const mmuz = @import("mmu.zig");
 
 const LCDControl = packed struct(u8) {
     /// 0: Off, 1: On
@@ -23,7 +23,7 @@ const LCDControl = packed struct(u8) {
 
 const LCDStatus = packed struct(u8) {
     /// 0: HBlank, 1: VBlank, 2: OAM, 3: Drawing pixels
-    Mode: u2 = 0,
+    Mode: Mode = .OAM,
     /// 0: LY != LYC, 1: LY == LYC
     LYCEqualsLY: bool = false,
     /// If set, selects the Mode 0 (HBlank) condition for the STAT interrupt
@@ -86,8 +86,8 @@ const Mode = enum(u2) {
 
 pub const PPU = struct {
     modeClock: u32,
+    mmu: *mmuz.MMU,
     mode: Mode,
-    mmu: *MMU,
     framebuffer: [160 * 144]RGBA,
     /// LCD Control register
     lcdc: *LCDControl,
@@ -111,14 +111,21 @@ pub const PPU = struct {
     winY: *u8,
     /// Window X position
     winX: *u8,
+    IF: *mmuz.InterruptFlags,
 
-    pub fn init(mmu: *MMU) PPU {
+    pub fn init(mmu: *mmuz.MMU) PPU {
+        const lcdc: *LCDControl = @ptrCast(mmu.readPtr(0xFF40));
+
+        // Enable PPU
+        lcdc.LcdPpuEnable = true;
+        lcdc.BgWinEnable = true;
+
         return .{
+            .mode = Mode.OAM,
             .mmu = mmu,
             .modeClock = 0,
-            .mode = .OAM,
             .framebuffer = std.mem.zeroes([160 * 144]RGBA),
-            .lcdc = @ptrCast(mmu.readPtr(0xFF40)),
+            .lcdc = lcdc,
             .stat = @ptrCast(mmu.readPtr(0xFF41)),
             .bgScrollY = mmu.readPtr(0xFF42),
             .bgScrollX = mmu.readPtr(0xFF43),
@@ -129,47 +136,84 @@ pub const PPU = struct {
             .op1 = @ptrCast(mmu.readPtr(0xFF49)),
             .winY = mmu.readPtr(0xFF4A),
             .winX = mmu.readPtr(0xFF4B),
+            .IF = @ptrCast(mmu.readPtr(0xFF0F)),
         };
     }
 
     pub fn step(self: *PPU, cycles: u32) void {
+        if (!self.lcdc.LcdPpuEnable) {
+            self.modeClock += cycles;
+            return;
+        }
+
         for (0..cycles) |_| {
             self.modeClock += 1;
+
+            self.stat.LYCEqualsLY = self.scanline.* == self.lyc.*;
+            if (self.stat.LYCEqualsLY and self.stat.LYC) {
+                self.IF.LCD = true;
+            }
 
             switch (self.mode) {
                 .OAM => {
                     if (self.modeClock % 80 == 0) {
                         self.modeClock = 0;
                         self.mode = .Drawing;
+                        self.stat.Mode = self.mode;
                     }
                 },
                 .Drawing => {
                     if (self.modeClock % 172 == 0) {
                         self.modeClock = 0;
-                        self.mode = .HBlank;
 
                         // TODO: Render scanline to framebuffer
                         self.renderScanline();
+
+                        self.mode = .HBlank;
+                        self.stat.Mode = self.mode;
+
+                        if (self.stat.Mode0) {
+                            self.IF.LCD = true;
+                        }
                     }
                 },
                 .HBlank => {
                     if (self.modeClock % 204 == 0) {
                         self.modeClock = 0;
-                        self.scanline.* += 1;
-                        self.mode = .OAM;
+                        self.scanline.* +%= 1;
 
-                        if (self.scanline.* == 144) {
+                        if (self.scanline.* == 143) {
                             self.mode = .VBlank;
+                            self.stat.Mode = self.mode;
+
+                            if (self.stat.Mode1) {
+                                self.IF.LCD = true;
+                            }
+
+                            self.IF.VBlank = true;
+                        } else {
+                            self.mode = .OAM;
+                            self.stat.Mode = self.mode;
+
+                            if (self.stat.Mode2) {
+                                self.IF.LCD = true;
+                            }
                         }
                     }
                 },
                 .VBlank => {
                     if (self.modeClock % 456 == 0) {
                         self.modeClock = 0;
-                        self.scanline.* += 1;
+                        self.scanline.* +%= 1;
 
-                        if (self.scanline.* == 153) {
+                        if (self.scanline.* == 154) {
                             self.mode = .OAM;
+                            self.stat.Mode = self.mode;
+
+                            if (self.stat.Mode2) {
+                                self.IF.LCD = true;
+                            }
+
                             self.scanline.* = 0;
                         }
                     }
@@ -185,18 +229,21 @@ pub const PPU = struct {
             //if (self.lcdc.BgWinEnable) {
             // const bgX = (x + @as(usize, @intCast(self.bgScrollX.*))) % 256;
             // const bgY = (self.scanline.* + @as(usize, @intCast(self.bgScrollY.*))) % 256;
-            const bgX = x;
-            const bgY = self.scanline.*;
+            const bgX: u8 = @intCast(x);
+            const bgY: u8 = self.scanline.*;
 
-            const tileX = bgX % 8;
-            const tileY = bgY % 8;
+            const tileX: u16 = bgX / 8;
+            const tileY: u16 = bgY / 8;
+
+            const pixelX: u8 = bgX % 8;
+            const pixelY: u8 = bgY % 8;
 
             const tileMapAddr: u16 = if (self.lcdc.BgTileMapArea) 0x9C00 else 0x9800;
-            const tileIndex = self.mmu.read(tileMapAddr + @as(u16, @intCast(tileY * 32 + tileY)));
+            const tileIndex = self.mmu.read(tileMapAddr + @as(u16, @intCast(tileY * 32 + tileX)));
 
             const tile = self.mmu.tileset[tileIndex];
 
-            const color = tile.data[tileY][tileX];
+            const color = tile.data[pixelY][pixelX];
             // const palette = self.bgp;
             // const colorValue = palette.get(color);
 

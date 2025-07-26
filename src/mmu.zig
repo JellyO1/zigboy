@@ -104,7 +104,9 @@ pub const MMU = struct {
             // 0xFE00...0xFE9F => self.oam[addr - 0xFE00],
             // 0xFEA0...0xFEFF => 0x00, // Not Usable
             0xFE00...0xFEFF => self.oam[addr - 0xFE00],
-            0xFF00...0xFF7F => self.io_registers[addr - 0xFF00],
+            0xFF00...0xFF7F => {
+                return self.io_registers[addr - 0xFF00];
+            },
             0xFF80...0xFFFE => self.hram[addr - 0xFF80],
             0xFFFF => @bitCast(self.ie_register),
             // else => 0xFF,
