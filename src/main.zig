@@ -34,20 +34,20 @@ pub const GameBoyState = struct {
 
     pub fn init(flags: ?cpu.Flags) !GameBoyState {
         // Load bootrom to memory
-        const boot_rom = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, "src/dmg_boot.bin", 256);
-        defer std.heap.page_allocator.free(boot_rom);
-        const boot_rom_slice = boot_rom[0..0x100].*;
+        // const boot_rom = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, "src/dmg_boot.bin", 256);
+        // defer std.heap.page_allocator.free(boot_rom);
+        // const boot_rom_slice = boot_rom[0..0x100].*;
 
         const game_rom = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, "src/cpu_instrs.gb", 1024 * 1024);
         defer std.heap.page_allocator.free(game_rom);
 
-        var mmui = MMU.init(boot_rom_slice, game_rom);
+        var mmui = MMU.init(null, game_rom);
+        var cpui = CPU.init(cpu.Registers.init(flags), &mmui, null, null, null);
+        var ppui = PPU.init(&mmui);
         return .{
-            .cpu = @constCast(
-                &CPU.init(cpu.Registers.init(flags), &mmui, null, null, null),
-            ),
+            .cpu = &cpui,
             .mmu = &mmui,
-            .ppu = @constCast(&PPU.init(&mmui)),
+            .ppu = &ppui,
             .cycles = 0,
         };
     }
@@ -312,9 +312,10 @@ pub fn main() !void {
             c.ImGui_Text("PC: 0x%04X", gameBoyState.cpu.*.registers.PC);
             c.ImGui_SameLine();
             c.ImGui_Text("SP: 0x%04X", gameBoyState.cpu.*.registers.SP);
-            c.ImGui_Text("LY: %u", gameBoyState.mmu.read(0xFF44));
+            c.ImGui_Text("LY: %u", gameBoyState.ppu.scanline.*);
             c.ImGui_EndChild();
             if (c.ImGui_BeginTabBar("DebugTabBar", 0)) {
+
                 // Tile texture
                 if (c.ImGui_BeginTabItem("VRAM", null, 0)) {
                     fit = fitAspect(@floatFromInt(tileTexture.*.w), @floatFromInt(tileTexture.*.h));
