@@ -172,7 +172,54 @@ pub const CPU = struct {
 
     pub fn step(self: *CPU) u32 {
         const op = self.fetch();
-        return self.execute(op);
+        var cycles = self.execute(op);
+
+        // If EI delay is set, set IME and clear EI delay
+        if (self.ei_delay) {
+            self.ei_delay = false;
+            self.ime = true;
+        }
+
+        const pending: u8 = self.mmu.read(0xFFFF) & self.mmu.read(0xFF0F) & 0x1F;
+        if (pending != 0) {
+            // Interrupt halt if there's an interrupt pending
+            if (self.halt) {
+                self.halt = false;
+            }
+
+            // Handle interrupts if IME is enabled
+            if (self.ime) {
+                const IF: *mmuz.InterruptFlags = @ptrCast(self.mmu.readPtr(0xFF0F));
+
+                if (IF.VBlank and self.mmu.ie_register.VBlank) {
+                    self.ime = false;
+                    IF.VBlank = false;
+                    cycles +%= self.handleInterrupt(0x40);
+                } else if (IF.Timer and self.mmu.ie_register.Timer) {
+                    self.ime = false;
+                    IF.Timer = false;
+
+                    cycles +%= self.handleInterrupt(0x50);
+                } else if (IF.Serial and self.mmu.ie_register.Serial) {
+                    self.ime = false;
+                    IF.Serial = false;
+
+                    cycles +%= self.handleInterrupt(0x58);
+                } else if (IF.LCD and self.mmu.ie_register.LCD) {
+                    self.ime = false;
+                    IF.LCD = false;
+
+                    cycles +%= self.handleInterrupt(0x48);
+                } else if (IF.Joypad and self.mmu.ie_register.Joypad) {
+                    self.ime = false;
+                    IF.Joypad = false;
+
+                    cycles +%= self.handleInterrupt(0x60);
+                }
+            }
+        }
+
+        return cycles;
     }
 
     fn fetch(self: *CPU) u8 {
@@ -188,12 +235,6 @@ pub const CPU = struct {
     }
 
     fn execute(self: *CPU, opcode: u8) u32 {
-        // If EI delay is set, set IME and clear EI delay
-        if (self.ei_delay) {
-            self.ei_delay = false;
-            self.ime = true;
-        }
-
         return switch (opcode) {
             0x00 => noop(),
             0x01 => ld_r16_n16(self, Registers.Word.BC, &fetch16(self)),
@@ -658,7 +699,7 @@ pub const CPU = struct {
                     0xFE => set_u3_vhl(self, 7),
                     0xFF => set_u3_r8(self, 7, Registers.Byte.A),
                 };
-            }, // TODO: prefix
+            },
             0xCC => call_cc_n16(self, &fetch16(self), ConditionCode.Z),
             0xCD => call_n16(self, &fetch16(self)),
             0xCE => adc_a_n8(self, &fetch(self)),
@@ -712,6 +753,26 @@ pub const CPU = struct {
             0xFE => cp_a_n8(self, &fetch(self)),
             0xFF => rst_vec(self, 0x38),
         };
+    }
+
+    fn handleInterrupt(self: *CPU, addr: u16) u32 {
+        // Save the next instruction address
+        const next_instr_addr = self.registers.PC;
+
+        // Split 16-bit value into high and low 8-bit values
+        const high: u8 = @intCast(next_instr_addr >> 8);
+        const low: u8 = @intCast(next_instr_addr & 0xFF);
+
+        // Decrement SP by 2 (16 bits)
+        self.registers.SP -= 2;
+
+        // Write high and low bytes to stack
+        self.mmu.write(self.registers.SP + 1, high);
+        self.mmu.write(self.registers.SP, low);
+
+        self.registers.PC = addr;
+
+        return 5;
     }
 
     /// No operation
@@ -1027,6 +1088,7 @@ pub const CPU = struct {
     }
 
     fn di(self: *CPU) u32 {
+        self.ei_delay = false;
         self.ime = false;
         return MCycle;
     }

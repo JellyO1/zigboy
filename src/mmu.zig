@@ -25,6 +25,24 @@ pub const InterruptFlags = packed struct(u8) {
     }
 };
 
+pub const TimerControl = packed struct(u8) {
+    // Controls the frequency at which TIMA is incremented
+    ClockSelect: ClockMode = 0,
+    // Controls whether TIMA is incremented. Note that DIV is always counting, regardless of this bit.
+    Enable: bool = false,
+};
+
+pub const ClockMode = enum(2) {
+    // Increments every 256 M-cycles
+    Mode0,
+    // Increments every 4 M-cycles
+    Mode1,
+    // Increments every 16 M-cycles
+    Mode2,
+    // Increments every 64 M-cycles
+    Mode3,
+};
+
 pub const Tile = struct {
     data: [8][8]u2,
 };
@@ -58,7 +76,7 @@ pub const MMU = struct {
     hram: [0x7F]u8,
     // Interrupt Enable register
     ie_register: InterruptFlags,
-
+    // Tile cache
     tileset: [384]Tile,
 
     // Memory Bank Controller
@@ -195,8 +213,18 @@ pub const MMU = struct {
             0xFF00...0xFF7F => {
                 self.io_registers[addr - 0xFF00] = value;
 
-                if (self.io_registers[0xFF02 - 0xFF00] == 0x81) {
-                    std.debug.print("{c}", .{self.io_registers[0xFF01 - 0xFF00]});
+                // Check if bit 7 (transfer enable) of SC (Serial Transfer Control) is set
+                if (self.io_registers[0xFF02 - 0xFF00] & 0x80 != 0) {
+                    std.debug.print("{c}", .{self.io_registers[1]});
+
+                    // Request serial interrupt that signals we've handled it.
+                    const IF: *InterruptFlags = @ptrCast(&self.io_registers[0xFF0F - 0xFF00]);
+                    IF.Serial = true;
+
+                    // Signal that we've handled it by setting it back to disabled
+                    // ~0x80 is every bit as 1 except the 7th, & this causes it to go
+                    // low while keeping every other bit the same.
+                    self.io_registers[2] = self.io_registers[0xFF02 - 0xFF00] & ~@as(u8, 0x80);
                 }
 
                 if (addr == 0xFF50) {
