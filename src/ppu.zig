@@ -149,11 +149,6 @@ pub const PPU = struct {
         for (0..cycles) |_| {
             self.modeClock += 1;
 
-            self.stat.LYCEqualsLY = self.scanline.* == self.lyc.*;
-            if (self.stat.LYCEqualsLY and self.stat.LYC) {
-                self.IF.LCD = true;
-            }
-
             switch (self.mode) {
                 .OAM => {
                     if (self.modeClock % 80 == 0) {
@@ -182,6 +177,8 @@ pub const PPU = struct {
                         self.modeClock = 0;
                         self.scanline.* +%= 1;
 
+                        self.setLYCEqualsLY();
+
                         if (self.scanline.* == 143) {
                             self.mode = .VBlank;
                             self.stat.Mode = self.mode;
@@ -206,6 +203,8 @@ pub const PPU = struct {
                         self.modeClock = 0;
                         self.scanline.* +%= 1;
 
+                        self.setLYCEqualsLY();
+
                         if (self.scanline.* == 154) {
                             self.mode = .OAM;
                             self.stat.Mode = self.mode;
@@ -222,7 +221,7 @@ pub const PPU = struct {
         }
     }
 
-    pub fn renderScanline(self: *PPU) void {
+    fn renderScanline(self: *PPU) void {
         for (0..160) |x| {
             //const as_u8: u8 = @bitCast(self.lcdc.*);
             //std.debug.print("{b:0>8}\n", .{as_u8});
@@ -257,7 +256,7 @@ pub const PPU = struct {
         }
     }
 
-    pub fn renderBackground(self: *PPU) void {
+    fn renderBackground(self: *PPU) void {
         for (0..20) |renderTileIndex| {
             const tileMapAddr: u16 = if (self.lcdc.BgTileMapArea) 0x9800 else 0x9C00;
 
@@ -278,6 +277,13 @@ pub const PPU = struct {
                     self.framebuffer[x + y * 160] = PaletteColors[@intFromEnum(colorValue)];
                 }
             }
+        }
+    }
+
+    fn setLYCEqualsLY(self: *PPU) void {
+        self.stat.LYCEqualsLY = self.scanline.* == self.lyc.*;
+        if (self.stat.LYCEqualsLY and self.stat.LYC) {
+            self.IF.LCD = true;
         }
     }
 };
