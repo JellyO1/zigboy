@@ -171,8 +171,14 @@ pub const CPU = struct {
     }
 
     pub fn step(self: *CPU) u32 {
+        var cycles: u32 = 0;
+        if (self.halt) {
+            cycles += self.checkInterrups();
+            return cycles;
+        }
+
         const op = self.fetch();
-        var cycles = self.execute(op);
+        cycles += self.execute(op);
 
         // If EI delay is set, set IME and clear EI delay
         if (self.ei_delay) {
@@ -180,44 +186,7 @@ pub const CPU = struct {
             self.ime = true;
         }
 
-        const pending: u8 = self.mmu.read(0xFFFF) & self.mmu.read(0xFF0F) & 0x1F;
-        if (pending != 0) {
-            // Interrupt halt if there's an interrupt pending
-            if (self.halt) {
-                self.halt = false;
-            }
-
-            // Handle interrupts if IME is enabled
-            if (self.ime) {
-                const IF: *mmuz.InterruptFlags = @ptrCast(self.mmu.readPtr(0xFF0F));
-
-                if (IF.VBlank and self.mmu.ie_register.VBlank) {
-                    self.ime = false;
-                    IF.VBlank = false;
-                    cycles +%= self.handleInterrupt(0x40);
-                } else if (IF.Timer and self.mmu.ie_register.Timer) {
-                    self.ime = false;
-                    IF.Timer = false;
-
-                    cycles +%= self.handleInterrupt(0x50);
-                } else if (IF.Serial and self.mmu.ie_register.Serial) {
-                    self.ime = false;
-                    IF.Serial = false;
-
-                    cycles +%= self.handleInterrupt(0x58);
-                } else if (IF.LCD and self.mmu.ie_register.LCD) {
-                    self.ime = false;
-                    IF.LCD = false;
-
-                    cycles +%= self.handleInterrupt(0x48);
-                } else if (IF.Joypad and self.mmu.ie_register.Joypad) {
-                    self.ime = false;
-                    IF.Joypad = false;
-
-                    cycles +%= self.handleInterrupt(0x60);
-                }
-            }
-        }
+        cycles += self.checkInterrups();
 
         return cycles;
     }
@@ -753,6 +722,50 @@ pub const CPU = struct {
             0xFE => cp_a_n8(self, &fetch(self)),
             0xFF => rst_vec(self, 0x38),
         };
+    }
+
+    fn checkInterrups(self: *CPU) u32 {
+        var cycles: u32 = 1;
+        const pending: u8 = self.mmu.read(0xFFFF) & self.mmu.read(0xFF0F) & 0x1F;
+        if (pending != 0) {
+            // Interrupt halt if there's an interrupt pending
+            if (self.halt) {
+                self.halt = false;
+            }
+
+            // Handle interrupts if IME is enabled
+            if (self.ime) {
+                const IF: *mmuz.InterruptFlags = @ptrCast(self.mmu.readPtr(0xFF0F));
+
+                if (IF.VBlank and self.mmu.ie_register.VBlank) {
+                    self.ime = false;
+                    IF.VBlank = false;
+                    cycles += self.handleInterrupt(0x40);
+                } else if (IF.Timer and self.mmu.ie_register.Timer) {
+                    self.ime = false;
+                    IF.Timer = false;
+
+                    cycles += self.handleInterrupt(0x50);
+                } else if (IF.Serial and self.mmu.ie_register.Serial) {
+                    self.ime = false;
+                    IF.Serial = false;
+
+                    cycles += self.handleInterrupt(0x58);
+                } else if (IF.LCD and self.mmu.ie_register.LCD) {
+                    self.ime = false;
+                    IF.LCD = false;
+
+                    cycles += self.handleInterrupt(0x48);
+                } else if (IF.Joypad and self.mmu.ie_register.Joypad) {
+                    self.ime = false;
+                    IF.Joypad = false;
+
+                    cycles += self.handleInterrupt(0x60);
+                }
+            }
+        }
+
+        return cycles;
     }
 
     fn handleInterrupt(self: *CPU, addr: u16) u32 {

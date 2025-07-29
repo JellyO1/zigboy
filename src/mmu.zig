@@ -25,24 +25,6 @@ pub const InterruptFlags = packed struct(u8) {
     }
 };
 
-pub const TimerControl = packed struct(u8) {
-    // Controls the frequency at which TIMA is incremented
-    ClockSelect: ClockMode = 0,
-    // Controls whether TIMA is incremented. Note that DIV is always counting, regardless of this bit.
-    Enable: bool = false,
-};
-
-pub const ClockMode = enum(2) {
-    // Increments every 256 M-cycles
-    Mode0,
-    // Increments every 4 M-cycles
-    Mode1,
-    // Increments every 16 M-cycles
-    Mode2,
-    // Increments every 64 M-cycles
-    Mode3,
-};
-
 pub const Tile = struct {
     data: [8][8]u2,
 };
@@ -122,9 +104,7 @@ pub const MMU = struct {
             // 0xFE00...0xFE9F => self.oam[addr - 0xFE00],
             // 0xFEA0...0xFEFF => 0x00, // Not Usable
             0xFE00...0xFEFF => self.oam[addr - 0xFE00],
-            0xFF00...0xFF7F => {
-                return self.io_registers[addr - 0xFF00];
-            },
+            0xFF00...0xFF7F => self.io_registers[addr - 0xFF00],
             0xFF80...0xFFFE => self.hram[addr - 0xFF80],
             0xFFFF => @bitCast(self.ie_register),
             // else => 0xFF,
@@ -211,10 +191,16 @@ pub const MMU = struct {
             // 0xFEA0...0xFEFF => {}, // Not Usable
             0xFE00...0xFEFF => self.oam[addr - 0xFE00] = value,
             0xFF00...0xFF7F => {
+                // Writing to the DIV register resets it
+                if (addr == 0xFF04) {
+                    self.io_registers[addr - 0xFF00] = 0;
+                    return;
+                }
+
                 self.io_registers[addr - 0xFF00] = value;
 
                 // Check if bit 7 (transfer enable) of SC (Serial Transfer Control) is set
-                if (self.io_registers[0xFF02 - 0xFF00] & 0x80 != 0) {
+                if (self.io_registers[0xFF02 - 0xFF00] == 0x81) {
                     std.debug.print("{c}", .{self.io_registers[1]});
 
                     // Request serial interrupt that signals we've handled it.
