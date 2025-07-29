@@ -55,7 +55,7 @@ pub fn runSingleTest(allocator: std.mem.Allocator, filename: []const u8) !void {
     for (json.value) |value| {
         // std.log.warn("{s}\n", .{value.name});
 
-        var state = main.GameBoyState.initTest(.{
+        var state = try main.GameBoyState.initTest(.{
             .A = value.initial.a,
             .B = value.initial.b,
             .C = value.initial.c,

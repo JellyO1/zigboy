@@ -20,15 +20,19 @@ const ppu = @import("ppu.zig");
 const PPU = ppu.PPU;
 const mmu = @import("mmu.zig");
 const MMU = mmu.MMU;
+const Timer = @import("timer.zig").Timer;
 const tracy = @import("tracy");
 
 pub const GameBoyState = struct {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
+    const allocator = gpa.allocator();
     /// Picture Processing Unit
     ppu: *PPU,
     /// Central Processing Unit
     cpu: *CPU,
     /// Memory management unit
     mmu: *MMU,
+    timer: *Timer,
     /// Total cycles elapsed
     cycles: u64,
 
@@ -38,28 +42,60 @@ pub const GameBoyState = struct {
         // defer std.heap.page_allocator.free(boot_rom);
         // const boot_rom_slice = boot_rom[0..0x100].*;
 
-        const game_rom = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, "src/cpu_instrs.gb", 1024 * 1024);
+        // const game_rom = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, "test_roms/01-special.gb", 1024 * 1024);
+        // const game_rom = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, "test_roms/02-interrupts.gb", 1024 * 1024);
+        const game_rom = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, "test_roms/cpu_instrs.gb", 1024 * 1024);
         defer std.heap.page_allocator.free(game_rom);
 
-        var mmui = MMU.init(null, game_rom);
-        var cpui = CPU.init(cpu.Registers.init(flags), &mmui, null, null, null);
-        var ppui = PPU.init(&mmui);
+        const mmui = try allocator.create(MMU);
+        mmui.* = MMU.init(null, game_rom);
+
+        const cpui = try allocator.create(CPU);
+        cpui.* = CPU.init(cpu.Registers.init(flags), mmui, null, null, null);
+
+        const ppui = try allocator.create(PPU);
+        ppui.* = PPU.init(mmui);
+
+        const timer = try allocator.create(Timer);
+        timer.* = Timer.init(mmui);
         return .{
-            .cpu = &cpui,
-            .mmu = &mmui,
-            .ppu = &ppui,
+            .cpu = cpui,
+            .mmu = mmui,
+            .ppu = ppui,
+            .timer = timer,
             .cycles = 0,
         };
     }
 
-    pub fn initTest(registers: cpu.Registers, ime: bool, ei_delay: bool) GameBoyState {
-        var mmui = MMU.init(null, null);
-        var cpui = CPU.init(registers, &mmui, ime, ei_delay, null);
-        var ppui = PPU.init(&mmui);
+    pub fn deinit(self: *GameBoyState) void {
+        allocator.destroy(self.timer);
+        allocator.destroy(self.ppu);
+        allocator.destroy(self.cpu);
+        allocator.destroy(self.mmu);
+        const check = gpa.deinit();
+
+        if (check == std.heap.Check.leak) {
+            std.debug.panic("Mem leak", .{});
+        }
+    }
+
+    pub fn initTest(registers: cpu.Registers, ime: bool, ei_delay: bool) !GameBoyState {
+        const mmui = try allocator.create(MMU);
+        mmui.* = MMU.init(null, null);
+
+        const cpui = try allocator.create(CPU);
+        cpui.* = CPU.init(registers, mmui, ime, ei_delay, null);
+
+        const ppui = try allocator.create(PPU);
+        ppui.* = PPU.init(mmui);
+
+        const timer = try allocator.create(Timer);
+        timer.* = Timer.init(mmui);
         return .{
-            .cpu = &cpui,
-            .mmu = &mmui,
-            .ppu = &ppui,
+            .cpu = cpui,
+            .mmu = mmui,
+            .ppu = ppui,
+            .timer = timer,
             .cycles = 0,
         };
     }
@@ -67,6 +103,7 @@ pub const GameBoyState = struct {
     pub fn step(self: *GameBoyState) void {
         const cycles = self.cpu.step();
         self.cycles += cycles;
+        self.timer.step(cycles);
         self.ppu.step(cycles);
 
         // sleep for the number of nanoseconds equivalent to the number of cycles
@@ -146,7 +183,19 @@ pub fn debugTileset(state: *GameBoyState, buffer: *[192 * 128]ppu.RGBA) void {
     }
 }
 
-pub fn debugTilemap(state: *GameBoyState, buffer: *[256 * 256]ppu.RGBA) void {
+pub fn debugTilemap(state: *GameBoyState, buffer: *[256 * 256]ppu.RGBA, tilemap1: bool) void {
+    if (tilemap1) {
+        for (0x9800..0x9FFF) |addr| {
+            draw(state, addr, buffer);
+        }
+    } else {
+        for (0x9C00..0x9FFF) |addr| {
+            draw(state, addr, buffer);
+        }
+    }
+}
+
+fn draw(state: *GameBoyState, addr: usize, buffer: *[256 * 256]ppu.RGBA) void {
     const colors = [4]ppu.RGBA{
         .{ .r = 255, .g = 255, .b = 255, .a = 255 },
         .{ .r = 192, .g = 192, .b = 192, .a = 255 },
@@ -157,25 +206,34 @@ pub fn debugTilemap(state: *GameBoyState, buffer: *[256 * 256]ppu.RGBA) void {
     const tilesPerRow = 32; // 32 tiles per row
     const tileSize = 8; // 8x8 pixels per tile
 
-    for (0x9800..0x9FFF) |addr| {
-        const tileIndex = state.mmu.read(@intCast(addr));
+    var tileIndex: u16 = state.mmu.read(@intCast(addr));
 
-        const tileX = tileIndex % tilesPerRow; // 0..32
-        const tileY = tileIndex / tilesPerRow; // 0..32
+    if (!state.ppu.lcdc.BgWinTileDataArea) {
+        const rem = @rem(tileIndex, 256);
+        const res = (tileIndex + 256) % 384;
 
-        const tile = state.mmu.tileset[tileIndex];
+        if (rem > 0) {
+            tileIndex = 128 + rem;
+        } else {
+            tileIndex = res;
+        }
+    }
 
-        // Loop through every pixel
-        inline for (0..8) |pixelXIndex| {
-            inline for (0..8) |pixelYIndex| {
-                const colorIndex = tile.data[pixelYIndex][pixelXIndex];
-                const color = colors[colorIndex];
+    const tileX = tileIndex % tilesPerRow; // 0..32
+    const tileY = tileIndex / tilesPerRow; // 0..32
 
-                const pixelX = tileX * tileSize + pixelXIndex;
-                const pixelY = tileY * tileSize + pixelYIndex;
-                const bufferIndex = pixelY * (tilesPerRow * tileSize) + pixelX;
-                buffer[bufferIndex] = color;
-            }
+    const tile = state.mmu.tileset[tileIndex];
+
+    // Loop through every pixel
+    inline for (0..8) |pixelXIndex| {
+        inline for (0..8) |pixelYIndex| {
+            const colorIndex = tile.data[pixelYIndex][pixelXIndex];
+            const color = colors[colorIndex];
+
+            const pixelX = tileX * tileSize + pixelXIndex;
+            const pixelY = tileY * tileSize + pixelYIndex;
+            const bufferIndex = pixelY * (tilesPerRow * tileSize) + pixelX;
+            buffer[bufferIndex] = color;
         }
     }
 }
@@ -195,6 +253,7 @@ fn fitAspect(img_w: f32, img_h: f32) struct { w: f32, h: f32 } {
 
 pub fn main() !void {
     var gameBoyState: GameBoyState = try GameBoyState.init(null);
+    defer gameBoyState.deinit();
 
     {
         errdefer |err| if (err == error.SdlError) std.log.err("SDL error: {s}", .{c.SDL_GetError()});
@@ -206,12 +265,16 @@ pub fn main() !void {
         const framebufferTexture = c.SDL_CreateTexture(@ptrCast(mainRenderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 160, 144);
         const tileTexture = c.SDL_CreateTexture(@ptrCast(mainRenderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 192, 128);
         const tilemapTexture = c.SDL_CreateTexture(@ptrCast(mainRenderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 256, 256);
+        const tilemap2Texture = c.SDL_CreateTexture(@ptrCast(mainRenderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 256, 256);
 
         var tileBuffer: ?*anyopaque = null;
         var tilePitch: c_int = 0;
 
         var tilemapBuffer: ?*anyopaque = null;
         var tilemapPitch: c_int = 0;
+
+        var tilemap2Buffer: ?*anyopaque = null;
+        var tilemap2Pitch: c_int = 0;
 
         const TARGET_FPS = 59.7;
         const FRAME_TIME_MS: f64 = 1000.0 / TARGET_FPS; // ~16.75 ms per frame
@@ -259,8 +322,12 @@ pub fn main() !void {
                 _ = c.SDL_UnlockTexture(tileTexture);
 
                 _ = c.SDL_LockTexture(tilemapTexture, null, &tilemapBuffer, &tilemapPitch);
-                debugTilemap(&gameBoyState, @ptrCast(@alignCast(tilemapBuffer)));
+                debugTilemap(&gameBoyState, @ptrCast(@alignCast(tilemapBuffer)), true);
                 _ = c.SDL_UnlockTexture(tilemapTexture);
+
+                _ = c.SDL_LockTexture(tilemap2Texture, null, &tilemap2Buffer, &tilemap2Pitch);
+                debugTilemap(&gameBoyState, @ptrCast(@alignCast(tilemap2Buffer)), false);
+                _ = c.SDL_UnlockTexture(tilemap2Texture);
 
                 var windowFlags: c_int = c.ImGuiWindowFlags_MenuBar | c.ImGuiWindowFlags_NoDocking;
                 const viewport = c.ImGui_GetMainViewport();
@@ -344,6 +411,14 @@ pub fn main() !void {
                         fit = fitAspect(@floatFromInt(tilemapTexture.*.w), @floatFromInt(tilemapTexture.*.h));
 
                         c.ImGui_Image(c.ImTextureRef{ ._TexID = @intFromPtr(tilemapTexture) }, c.ImVec2{ .x = fit.w, .y = fit.h });
+                        c.ImGui_EndTabItem();
+                    }
+
+                    // Tilemap texture
+                    if (c.ImGui_BeginTabItem("Tilemap2", null, 0)) {
+                        fit = fitAspect(@floatFromInt(tilemap2Texture.*.w), @floatFromInt(tilemap2Texture.*.h));
+
+                        c.ImGui_Image(c.ImTextureRef{ ._TexID = @intFromPtr(tilemap2Texture) }, c.ImVec2{ .x = fit.w, .y = fit.h });
                         c.ImGui_EndTabItem();
                     }
 

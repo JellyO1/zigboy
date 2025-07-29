@@ -37,11 +37,11 @@ const LCDStatus = packed struct(u8) {
     _: u1 = 0,
 };
 
-pub const RGBA = packed struct {
-    r: u8,
-    g: u8,
-    b: u8,
+pub const RGBA = packed struct(u32) {
     a: u8,
+    b: u8,
+    g: u8,
+    r: u8,
 };
 
 const PaletteColors = [4]RGBA{
@@ -117,8 +117,8 @@ pub const PPU = struct {
         const lcdc: *LCDControl = @ptrCast(mmu.readPtr(0xFF40));
 
         // Enable PPU
-        lcdc.LcdPpuEnable = true;
-        lcdc.BgWinEnable = true;
+        // lcdc.LcdPpuEnable = true;
+        // lcdc.BgWinEnable = true;
 
         return .{
             .mode = Mode.OAM,
@@ -223,13 +223,20 @@ pub const PPU = struct {
 
     fn renderScanline(self: *PPU) void {
         for (0..160) |x| {
-            //const as_u8: u8 = @bitCast(self.lcdc.*);
-            //std.debug.print("{b:0>8}\n", .{as_u8});
-            //if (self.lcdc.BgWinEnable) {
-            // const bgX = (x + @as(usize, @intCast(self.bgScrollX.*))) % 256;
-            // const bgY = (self.scanline.* + @as(usize, @intCast(self.bgScrollY.*))) % 256;
-            const bgX: u8 = @intCast(x);
-            const bgY: u8 = self.scanline.*;
+            self.renderBackground(x);
+            if (self.lcdc.WinEnable) {}
+        }
+    }
+
+    fn renderBackground(self: *PPU, x: usize) void {
+        const xu8: u8 = @intCast(x);
+        //const as_u8: u8 = @bitCast(self.lcdc.*);
+        //std.debug.print("{b:0>8}\n", .{as_u8});
+        if (self.lcdc.BgWinEnable) {
+            const bgX: u8 = xu8 +% self.bgScrollX.*;
+            const bgY: u8 = self.scanline.* +% self.bgScrollY.*;
+            // const bgX: u8 = @intCast(x);
+            // const bgY: u8 = self.scanline.*;
 
             const tileX: u16 = bgX / 8;
             const tileY: u16 = bgY / 8;
@@ -238,7 +245,21 @@ pub const PPU = struct {
             const pixelY: u8 = bgY % 8;
 
             const tileMapAddr: u16 = if (self.lcdc.BgTileMapArea) 0x9C00 else 0x9800;
-            const tileIndex = self.mmu.read(tileMapAddr + @as(u16, @intCast(tileY * 32 + tileX)));
+            var tileIndex: u16 = self.mmu.read(tileMapAddr + @as(u16, @intCast(tileY * 32 + tileX)));
+
+            if (!self.lcdc.BgWinTileDataArea) {
+                // std.debug.panic("8800 method, {}\n", .{tileIndex});
+                const rem = @rem(tileIndex, 256);
+                const res = (tileIndex + 256) % 384;
+                //std.debug.panic("{} {}", .{ res, rem });
+
+                if (rem > 0) {
+                    std.debug.panic("{} {}", .{ res, rem });
+                    tileIndex = 128 + rem;
+                } else {
+                    tileIndex = res;
+                }
+            }
 
             const tile = self.mmu.tileset[tileIndex];
 
@@ -247,36 +268,7 @@ pub const PPU = struct {
             // const colorValue = palette.get(color);
 
             const frameBufferIndex = x + @as(usize, @intCast((self.scanline.*))) * 160;
-            if (frameBufferIndex < self.framebuffer.len) {
-                self.framebuffer[frameBufferIndex] = PaletteColors[color];
-            }
-            //}
-
-            if (self.lcdc.WinEnable) {}
-        }
-    }
-
-    fn renderBackground(self: *PPU) void {
-        for (0..20) |renderTileIndex| {
-            const tileMapAddr: u16 = if (self.lcdc.BgTileMapArea) 0x9800 else 0x9C00;
-
-            var tileIndex = self.mmu.read(tileMapAddr + @as(u16, @intCast(renderTileIndex)));
-
-            if (!self.lcdc.BgWinTileDataArea) {
-                tileIndex += 128;
-            }
-
-            const tile = self.mmu.tileset[tileIndex];
-            for (0..8) |row| {
-                for (0..8) |col| {
-                    const color = tile.data[row][col];
-                    const palette = self.bgp;
-                    const colorValue = palette.get(color);
-                    const x = renderTileIndex * 8 + col;
-                    const y = row;
-                    self.framebuffer[x + y * 160] = PaletteColors[@intFromEnum(colorValue)];
-                }
-            }
+            self.framebuffer[frameBufferIndex] = PaletteColors[color];
         }
     }
 
