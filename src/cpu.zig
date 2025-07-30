@@ -1422,10 +1422,7 @@ pub const CPU = struct {
     fn or_a_r8(self: *CPU, r8: Registers.Byte) u32 {
         self.registers.A = self.registers.A | self.registers.getByte(r8);
 
-        if (self.registers.A == 0) {
-            self.registers.F.Z = true;
-        }
-
+        self.registers.F.Z = self.registers.A == 0;
         self.registers.F.N = false;
         self.registers.F.H = false;
         self.registers.F.C = false;
@@ -1437,10 +1434,7 @@ pub const CPU = struct {
     fn or_a_vhl(self: *CPU) u32 {
         self.registers.A = self.registers.A | self.mmu.read(self.registers.getWord(Registers.Word.HL));
 
-        if (self.registers.A == 0) {
-            self.registers.F.Z = true;
-        }
-
+        self.registers.F.Z = self.registers.A == 0;
         self.registers.F.N = false;
         self.registers.F.H = false;
         self.registers.F.C = false;
@@ -1452,10 +1446,7 @@ pub const CPU = struct {
     fn or_a_n8(self: *CPU, n8: *const u8) u32 {
         self.registers.A = self.registers.A | n8.*;
 
-        if (self.registers.A == 0) {
-            self.registers.F.Z = true;
-        }
-
+        self.registers.F.Z = self.registers.A == 0;
         self.registers.F.N = false;
         self.registers.F.H = false;
         self.registers.F.C = false;
