@@ -177,14 +177,14 @@ pub const CPU = struct {
             return cycles;
         }
 
-        const op = self.fetch();
-        cycles += self.execute(op);
-
         // If EI delay is set, set IME and clear EI delay
         if (self.ei_delay) {
             self.ei_delay = false;
             self.ime = true;
         }
+
+        const op = self.fetch();
+        cycles += self.execute(op);
 
         cycles += self.checkInterrups();
 
@@ -253,7 +253,7 @@ pub const CPU = struct {
             0x2D => dec_r8(self, Registers.Byte.L),
             0x2E => ld_r8_n8(self, Registers.Byte.L, &fetch(self)),
             0x2F => cpl(self),
-            0x30 => jr_cc_e8(self, @as(i8, @bitCast(fetch(self))), ConditionCode.NC),
+            0x30 => jr_cc_e8(self, @as(i8, @bitCast(self.fetch())), ConditionCode.NC),
             0x31 => ld_sp_n16(self, &fetch16(self)),
             0x32 => ld_hld_a(self),
             0x33 => inc_sp(self),
@@ -794,60 +794,84 @@ pub const CPU = struct {
     }
 
     fn adc_a_r8(self: *CPU, r8: Registers.Byte) u32 {
-        const result, const overflow = @addWithOverflow(self.registers.A, self.registers.getByte(r8) +% @as(u8, @as(u1, @bitCast(self.registers.F.C))));
-        self.registers.A = result;
+        const vr8 = self.registers.getByte(r8);
+        const carry = @as(u8, @as(u1, @bitCast(self.registers.F.C)));
+        const r1, const ov1 = @addWithOverflow(self.registers.A, vr8);
+        const r2, const ov2 = @addWithOverflow(r1, carry);
 
-        self.registers.F.Z = result == 0;
+        // Half carry when bit 3 overflows (including carry flag)
+        self.registers.F.H = ((self.registers.A & 0x0F) + (vr8 & 0x0F) + carry) > 0x0F;
+
+        self.registers.A = r2;
+
+        self.registers.F.Z = r2 == 0;
         self.registers.F.N = false;
-        self.registers.F.H = (result & 0x10) != 0;
-        self.registers.F.C = overflow == 1;
+        self.registers.F.C = ov1 == 1 or ov2 == 1;
 
         return MCycle;
     }
 
     fn adc_a_vhl(self: *CPU) u32 {
-        const result, const overflow = @addWithOverflow(self.registers.A, self.mmu.read(self.registers.getWord(Registers.Word.HL)) +% @as(u8, @as(u1, @bitCast(self.registers.F.C))));
-        self.registers.A = result;
+        const vhl = self.mmu.read(self.registers.getWord(Registers.Word.HL));
+        const carry = @as(u8, @as(u1, @bitCast(self.registers.F.C)));
+        const r1, const ov1 = @addWithOverflow(self.registers.A, vhl);
+        const r2, const ov2 = @addWithOverflow(r1, carry);
 
-        self.registers.F.Z = result == 0;
+        // Half carry when bit 3 overflows (including carry flag)
+        self.registers.F.H = ((self.registers.A & 0x0F) + (vhl & 0x0F) + carry) > 0x0F;
+
+        self.registers.A = r2;
+
+        self.registers.F.Z = r2 == 0;
         self.registers.F.N = false;
-        self.registers.F.H = (result & 0x10) != 0;
-        self.registers.F.C = overflow == 1;
+        self.registers.F.C = ov1 == 1 or ov2 == 1;
 
         return MCycle * 2;
     }
 
     fn adc_a_n8(self: *CPU, n8: *const u8) u32 {
-        const result, const overflow = @addWithOverflow(self.registers.A, n8.* +% @as(u8, @as(u1, @bitCast(self.registers.F.C))));
-        self.registers.A = result;
+        const r1, const ov1 = @addWithOverflow(self.registers.A, n8.*);
+        const r2, const ov2 = @addWithOverflow(r1, @as(u8, @as(u1, @bitCast(self.registers.F.C))));
 
-        self.registers.F.Z = result == 0;
+        // Half carry when bit 3 overflows (including carry flag)
+        self.registers.F.H = ((self.registers.A & 0x0F) + (n8.* & 0x0F) + @as(u8, @as(u1, @bitCast(self.registers.F.C)))) > 0x0F;
+
+        self.registers.A = r2;
+
+        self.registers.F.Z = r2 == 0;
         self.registers.F.N = false;
-        self.registers.F.H = (result & 0x10) != 0;
-        self.registers.F.C = overflow == 1;
+        self.registers.F.C = ov1 == 1 or ov2 == 1;
 
         return MCycle * 2;
     }
 
     fn add_a_r8(self: *CPU, r8: Registers.Byte) u32 {
-        const result, const overflow = @addWithOverflow(self.registers.A, self.registers.getByte(r8));
+        const vr8 = self.registers.getByte(r8);
+        const result, const overflow = @addWithOverflow(self.registers.A, vr8);
+
+        // Half carry when bit 3 overflows
+        self.registers.F.H = ((self.registers.A & 0x0F) + (vr8 & 0x0F)) > 0x0F;
+
         self.registers.A = result;
 
         self.registers.F.Z = result == 0;
         self.registers.F.N = false;
-        self.registers.F.H = (result & 0x10) != 0;
         self.registers.F.C = overflow == 1;
 
         return MCycle;
     }
 
     fn add_a_vhl(self: *CPU) u32 {
-        const result, const overflow = @addWithOverflow(self.registers.A, self.mmu.read(self.registers.getWord(Registers.Word.HL)));
+        const vhl = self.mmu.read(self.registers.getWord(Registers.Word.HL));
+        const result, const overflow = @addWithOverflow(self.registers.A, vhl);
+
+        // Half carry when bit 3 overflows
+        self.registers.F.H = ((self.registers.A & 0x0F) + (vhl & 0x0F)) > 0x0F;
+
         self.registers.A = result;
 
         self.registers.F.Z = result == 0;
         self.registers.F.N = false;
-        self.registers.F.H = (result & 0x10) != 0;
         self.registers.F.C = overflow == 1;
 
         return MCycle * 2;
@@ -855,50 +879,56 @@ pub const CPU = struct {
 
     fn add_a_n8(self: *CPU, n8: *const u8) u32 {
         const result, const overflow = @addWithOverflow(self.registers.A, n8.*);
+
+        // Half carry when bit 3 overflows
+        self.registers.F.H = ((self.registers.A & 0x0F) + (n8.* & 0x0F)) > 0x0F;
+
         self.registers.A = result;
 
         self.registers.F.Z = result == 0;
         self.registers.F.N = false;
-        self.registers.F.H = (result & 0x10) != 0;
         self.registers.F.C = overflow == 1;
 
         return MCycle * 2;
     }
 
     fn add_hl_r16(self: *CPU, r16: Registers.Word) u32 {
-        const result, const overflow = @addWithOverflow(self.registers.getWord(Registers.Word.HL), self.registers.getWord(r16));
+        const hl = self.registers.getWord(Registers.Word.HL);
+        const vr16 = self.registers.getWord(r16);
+        const result, const overflow = @addWithOverflow(hl, vr16);
         self.registers.setWord(Registers.Word.HL, result);
 
-        self.registers.F.Z = result == 0;
         self.registers.F.N = false;
-        self.registers.F.H = (result & 0x800) != 0;
+        self.registers.F.H = ((hl & 0x7FF) + (vr16 & 0x7FF)) > 0x7FF;
         self.registers.F.C = overflow == 1;
 
         return MCycle * 2;
     }
 
     fn add_hl_sp(self: *CPU) u32 {
-        const result, const overflow = @addWithOverflow(self.registers.getWord(Registers.Word.HL), self.registers.SP);
+        const hl = self.registers.getWord(Registers.Word.HL);
+        const result, const overflow = @addWithOverflow(hl, self.registers.SP);
         self.registers.setWord(Registers.Word.HL, result);
 
-        self.registers.F.Z = result == 0;
         self.registers.F.N = false;
-        self.registers.F.H = (result & 0x800) != 0;
+        self.registers.F.H = ((hl & 0x7FF) + (self.registers.SP & 0x7FF)) > 0x7FF;
         self.registers.F.C = overflow == 1;
 
         return MCycle * 2;
     }
 
     fn add_sp_e8(self: *CPU, e8: *const i8) u32 {
-        const u32Result: u32 = std.math.lossyCast(u32, @as(i32, @intCast(self.registers.SP)) +% e8.*);
-        const result: u16 = @truncate(u32Result);
+        const result, _ = @addWithOverflow(@as(i16, @bitCast(self.registers.SP)), e8.*);
 
-        self.registers.SP = result;
+        // bit 3 overflow
+        self.registers.F.H = (self.registers.SP & 0x0F) + (@as(u8, @bitCast(e8.*)) & 0x0F) > 0x0F;
+        // bit 7 overflow
+        self.registers.F.C = (self.registers.SP & 0xFF) + (@as(u16, @intCast(@as(u8, @bitCast(e8.*)))) & 0xFF) > 0xFF;
+
+        self.registers.SP = @bitCast(result);
 
         self.registers.F.Z = false;
         self.registers.F.N = false;
-        self.registers.F.H = (result & 0x10) != 0;
-        self.registers.F.C = (result & 0x100) != 0;
 
         return MCycle * 4;
     }
@@ -1006,31 +1036,34 @@ pub const CPU = struct {
 
     fn cp_a_r8(self: *CPU, r8: Registers.Byte) u32 {
         const val = self.registers.getByte(r8);
-        const result, const overflow = @subWithOverflow(self.registers.A, val);
+        const result = self.registers.A -% val;
+
         self.registers.F.Z = result == 0;
-        self.registers.F.N = false;
+        self.registers.F.N = true;
         self.registers.F.H = (self.registers.A & 0xF) < (val & 0xF);
-        self.registers.F.C = overflow == 1;
+        self.registers.F.C = self.registers.A < val;
         return MCycle;
     }
 
     fn cp_a_vhl(self: *CPU) u32 {
         const val = self.mmu.read(self.registers.getWord(Registers.Word.HL));
-        const result, const overflow = @subWithOverflow(self.registers.A, val);
+        const result = self.registers.A -% val;
+
         self.registers.F.Z = result == 0;
-        self.registers.F.N = false;
+        self.registers.F.N = true;
         self.registers.F.H = (self.registers.A & 0xF) < (val & 0xF);
-        self.registers.F.C = overflow == 1;
+        self.registers.F.C = self.registers.A < val;
         return MCycle * 2;
     }
 
     fn cp_a_n8(self: *CPU, n8: *const u8) u32 {
         const val = n8.*;
-        const result, const overflow = @subWithOverflow(self.registers.A, val);
+        const result = self.registers.A -% val;
+
         self.registers.F.Z = result == 0;
-        self.registers.F.N = false;
+        self.registers.F.N = true;
         self.registers.F.H = (self.registers.A & 0xF) < (val & 0xF);
-        self.registers.F.C = overflow == 1;
+        self.registers.F.C = self.registers.A < val;
         return MCycle * 2;
     }
 
@@ -1043,7 +1076,6 @@ pub const CPU = struct {
 
     fn daa(self: *CPU) u32 {
         var adjustment: u8 = 0;
-        var setCarry: bool = false;
         if (self.registers.F.N) {
             if (self.registers.F.C) {
                 adjustment += 0x60;
@@ -1056,7 +1088,7 @@ pub const CPU = struct {
         } else {
             if (self.registers.F.C or self.registers.A > 0x99) {
                 adjustment += 0x60;
-                setCarry = true;
+                self.registers.F.C = true;
             }
             if (self.registers.F.H or (self.registers.A & 0xF) > 0x9) {
                 adjustment += 0x6;
@@ -1065,7 +1097,6 @@ pub const CPU = struct {
             self.registers.A +%= adjustment;
         }
 
-        self.registers.F.C = setCarry;
         self.registers.F.Z = self.registers.A == 0;
         self.registers.F.H = false;
         return MCycle;
@@ -1136,7 +1167,7 @@ pub const CPU = struct {
         self.registers.setByte(r8, val +% 1);
         self.registers.F.Z = self.registers.getByte(r8) == 0;
         self.registers.F.N = false;
-        self.registers.F.H = (val & 0xF) > 0xF;
+        self.registers.F.H = ((val & 0xF) + 1) > 0xF;
         return MCycle;
     }
 
@@ -1145,7 +1176,7 @@ pub const CPU = struct {
         self.mmu.write(self.registers.getWord(Registers.Word.HL), val +% 1);
         self.registers.F.Z = (val +% 1) == 0;
         self.registers.F.N = false;
-        self.registers.F.H = (val & 0xF) > 0xF;
+        self.registers.F.H = ((val & 0xF) + 1) > 0xF;
         return MCycle * 3;
     }
 
@@ -1300,8 +1331,10 @@ pub const CPU = struct {
 
     /// Copy the value in the register A to the byte pointed to by 0xFF00 + n8
     fn ldh_n8_a(self: *CPU, n8: *const u8) u32 {
-        self.mmu.write(0xFF00 + @as(u16, @intCast(n8.*)), self.registers.A);
-        return MCycle * 3;
+        return self.ldh_n16_a(0xFF00 + @as(u16, @intCast(n8.*)));
+
+        // self.mmu.write(0xFF00 + @as(u16, @intCast(n8.*)), self.registers.A);
+        // return MCycle * 3;
     }
 
     /// Copy the value in the register A to the byte pointed to by 0xFF00 + C
@@ -1393,8 +1426,7 @@ pub const CPU = struct {
         const offset = @as(u16, @bitCast(@as(i16, e8)));
 
         // Wrapping addition (+%) when it doesn't fit wraps around
-        const ov = @addWithOverflow(sp, offset);
-        const result = ov[0];
+        const result, _ = @addWithOverflow(sp, offset);
 
         // Reset zero flag
         self.registers.F.Z = false;
@@ -1402,9 +1434,9 @@ pub const CPU = struct {
         self.registers.F.N = false;
 
         // Half carry occurs if bit 3 carries into bit 4
-        self.registers.F.H = ((sp & 0x0F) + (offset & 0x0F)) & 0x10 != 0;
+        self.registers.F.H = ((sp & 0x0F) + (offset & 0x0F)) > 0x0F;
         // Carry occurs if bit 7 carries into bit 8
-        self.registers.F.C = ov[1] != 0;
+        self.registers.F.C = ((sp & 0xFF) + (offset & 0xFF)) > 0xFF;
 
         // store result in HL
         self.registers.setWord(Registers.Word.HL, result);
@@ -1456,7 +1488,8 @@ pub const CPU = struct {
 
     /// Pop register AF from the stack
     fn pop_af(self: *CPU) u32 {
-        self.registers.F = @as(Flags, @bitCast(self.mmu.read(self.registers.SP)));
+        // Sets F to the value in the stack but keeps the lower nibble grounded to 0
+        self.registers.F = @as(Flags, @bitCast(self.mmu.read(self.registers.SP) & 0xF0));
         self.registers.A = self.mmu.read(self.registers.SP + 1);
         self.registers.SP += 2;
 
@@ -1756,7 +1789,7 @@ pub const CPU = struct {
         self.registers.setByte(r8, (val >> 1) | (val << 7));
 
         // Set carry flag to the result
-        self.registers.F.C = self.registers.getByte(r8) & 1 == 1;
+        self.registers.F.C = (val & 1) == 1;
 
         // Set if result is zero
         self.registers.F.Z = self.registers.getByte(r8) == 0;
@@ -1832,15 +1865,17 @@ pub const CPU = struct {
         const val = self.registers.getByte(r8);
         const carry = @as(u8, @as(u1, @bitCast(self.registers.F.C)));
 
-        const borrow, const overflow = @subWithOverflow(self.registers.A, val +% carry);
+        const r1, const ov1 = @subWithOverflow(self.registers.A, val);
+        const r2, const ov2 = @subWithOverflow(r1, carry);
 
-        self.registers.A = borrow;
+        self.registers.F.H = (self.registers.A & 0xF) < ((val & 0xF) + carry);
+
+        self.registers.A = r2;
 
         // Set if borrow (i.e. if (r8 + carry) > A)
-        self.registers.F.C = overflow != 0;
+        self.registers.F.C = ov1 != 0 or ov2 != 0;
         self.registers.F.Z = self.registers.A == 0;
         self.registers.F.N = true;
-        self.registers.F.H = (self.registers.A & 0x10) != 0;
 
         return MCycle;
     }
@@ -1850,32 +1885,35 @@ pub const CPU = struct {
         const val = self.mmu.read(self.registers.getWord(Registers.Word.HL));
         const carry = @as(u8, @as(u1, @bitCast(self.registers.F.C)));
 
-        const borrow, const overflow = @subWithOverflow(self.registers.A, val +% carry);
+        const r1, const ov1 = @subWithOverflow(self.registers.A, val);
+        const r2, const ov2 = @subWithOverflow(r1, carry);
 
-        self.registers.A = borrow;
+        self.registers.F.H = (self.registers.A & 0xF) < ((val & 0xF) + carry);
+        self.registers.A = r2;
 
         // Set if borrow (i.e. if (r8 + carry) > A)
-        self.registers.F.C = overflow != 0;
+        self.registers.F.C = ov1 != 0 or ov2 != 0;
         self.registers.F.Z = self.registers.A == 0;
         self.registers.F.N = true;
-        self.registers.F.H = (self.registers.A & 0x10) != 0;
 
         return MCycle * 2;
     }
 
     /// Subtract the value in n8 from register A
-    fn sbc_a_n8(self: *CPU, val: *const u8) u32 {
+    fn sbc_a_n8(self: *CPU, n8: *const u8) u32 {
         const carry = @as(u8, @as(u1, @bitCast(self.registers.F.C)));
 
-        const borrow, const overflow = @subWithOverflow(self.registers.A, val.* +% carry);
+        const r1, const ov1 = @subWithOverflow(self.registers.A, n8.*);
+        const r2, const ov2 = @subWithOverflow(r1, carry);
 
-        self.registers.A = borrow;
+        self.registers.F.H = (self.registers.A & 0xF) < ((n8.* & 0xF) + carry);
+
+        self.registers.A = r2;
 
         // Set if borrow (i.e. if (r8 + carry) > A)
-        self.registers.F.C = overflow != 0;
+        self.registers.F.C = ov1 == 1 or ov2 == 1;
         self.registers.F.Z = self.registers.A == 0;
         self.registers.F.N = true;
-        self.registers.F.H = (self.registers.A & 0x10) != 0;
 
         return MCycle * 2;
     }
@@ -1978,35 +2016,35 @@ pub const CPU = struct {
     fn sub_a_r8(self: *CPU, r8: Registers.Byte) u32 {
         const val = self.registers.getByte(r8);
         const result, const overflow = @subWithOverflow(self.registers.A, val);
+        // Set if half-borrow
+        self.registers.F.H = (self.registers.A & 0xF) < (val & 0xF);
         self.registers.setByte(Registers.Byte.A, result);
         self.registers.F.C = overflow == 1;
         self.registers.F.Z = result == 0;
         self.registers.F.N = true;
-        // Set if half-borrow
-        self.registers.F.H = (self.registers.A & 0xF) < (val & 0xF);
         return MCycle;
     }
 
     fn sub_a_vhl(self: *CPU) u32 {
         const val = self.mmu.read(self.registers.getWord(Registers.Word.HL));
         const result, const overflow = @subWithOverflow(self.registers.A, val);
+        // Set if half-borrow
+        self.registers.F.H = (self.registers.A & 0xF) < (val & 0xF);
         self.registers.setByte(Registers.Byte.A, result);
         self.registers.F.C = overflow == 1;
         self.registers.F.Z = result == 0;
         self.registers.F.N = true;
-        // Set if half-borrow
-        self.registers.F.H = (self.registers.A & 0xF) < (val & 0xF);
         return MCycle * 2;
     }
 
     fn sub_a_n8(self: *CPU, val: *const u8) u32 {
         const result, const overflow = @subWithOverflow(self.registers.A, val.*);
+        // Set if half-borrow
+        self.registers.F.H = (self.registers.A & 0xF) < (val.* & 0xF);
         self.registers.setByte(Registers.Byte.A, result);
         self.registers.F.C = overflow == 1;
         self.registers.F.Z = result == 0;
         self.registers.F.N = true;
-        // Set if half-borrow
-        self.registers.F.H = (self.registers.A & 0xF) < (val.* & 0xF);
         return MCycle * 2;
     }
 
