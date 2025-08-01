@@ -114,8 +114,28 @@ pub const GameBoyState = struct {
         // std.time.sleep((cycles / CPUClockRate) * std.time.ns_per_s);
     }
 
+    pub fn keyPress(self: *GameBoyState, key: c.SDL_Keycode, down: bool) void {
+        const joypad: *mmu.Joypad = @ptrCast(self.mmu.readPtr(0xFF00));
+
+        switch (key) {
+            // A, RIGHT
+            c.SDLK_Z, c.SDLK_RIGHT => joypad.*.ARight = !down,
+            // B, LEFT
+            c.SDLK_X, c.SDLK_LEFT => joypad.*.BLeft = !down,
+            // START, DOWN
+            c.SDLK_RETURN, c.SDLK_DOWN => joypad.*.StartDown = !down,
+            // SELECT, UP
+            c.SDLK_BACKSPACE, c.SDLK_UP => joypad.*.SelectUp = !down,
+            else => {
+                // Don't fire any interrupt
+                return;
+            },
         }
 
+        // Request Joypad interrupt
+        if (!joypad.DisableButtons or !joypad.DisableDpad) {
+            const IF: *mmu.InterruptFlags = @ptrCast(self.mmu.readPtr(0xFF0F));
+            IF.Joypad = true;
         }
     }
 };
@@ -189,6 +209,14 @@ pub fn main() !void {
             var ev: c.SDL_Event = undefined;
             while (c.SDL_PollEvent(&ev)) {
                 _ = c.cImGui_ImplSDL3_ProcessEvent(&ev);
+                switch (ev.type) {
+                    c.SDL_EVENT_QUIT => break :mainLoop,
+                    c.SDL_EVENT_KEY_DOWN, c.SDL_EVENT_KEY_UP => {
+                        const keyEvent: *c.SDL_KeyboardEvent = @ptrCast(&ev);
+                        gameBoyState.keyPress(keyEvent.key, keyEvent.down);
+                    },
+                    else => {},
+                }
                 if (ev.type == c.SDL_EVENT_QUIT) {
                     break :mainLoop;
                 }
