@@ -34,6 +34,8 @@ pub fn build(b: *std.Build) void {
         .renderer = cimgui.Renderer.SDL3Renderer,
     });
 
+    const clap = b.dependency("clap", .{});
+
     // We will also create a module for our other entry point, 'main.zig'.
     const exe_mod = b.createModule(.{
         // `root_source_file` is the Zig "entry point" of the module. If a module
@@ -57,6 +59,7 @@ pub fn build(b: *std.Build) void {
     });
     exe.linkLibC();
     exe.linkLibrary(cimgui_dep.artifact("cimgui"));
+    exe.root_module.addImport("clap", clap.module("clap"));
 
     if (enable_tracy) {
         exe.linkLibrary(tracy_dep.artifact("tracy"));
