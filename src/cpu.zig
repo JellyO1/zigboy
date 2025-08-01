@@ -70,21 +70,18 @@ pub const Registers = struct {
         HL,
     };
 
-    pub fn init(flags: ?Flags) Registers {
-        _ = flags;
+    pub fn init() Registers {
         return .{
-            .A = 0x01,
-            .B = 0x00,
-            .C = 0x13,
+            .A = 0,
+            .B = 0,
+            .C = 0,
             .D = 0,
-            .E = 0xD8,
-            .H = 0x01,
-            .L = 0x4D,
-            .F = Flags.init(.{
-                .Z = true,
-            }),
-            .PC = 0x100,
-            .SP = 0xFFFE,
+            .E = 0,
+            .H = 0,
+            .L = 0,
+            .F = Flags.init(null),
+            .PC = 0,
+            .SP = 0,
         };
     }
 
