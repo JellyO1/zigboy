@@ -25,6 +25,29 @@ pub const InterruptFlags = packed struct(u8) {
     }
 };
 
+pub const Joypad = packed struct(u8) {
+    ARight: bool = true,
+    BLeft: bool = true,
+    SelectUp: bool = true,
+    StartDown: bool = true,
+    DisableDpad: bool = true,
+    DisableButtons: bool = true,
+    _: u2 = 0,
+
+    pub fn read(self: *Joypad) u8 {
+        if (self.DisableButtons and self.DisableDpad) {
+            return @as(u8, @bitCast(self.*)) | 0x0F;
+        }
+
+        return @as(u8, @bitCast(self.*));
+    }
+
+    pub fn write(self: *Joypad, value: u8) void {
+        self.DisableDpad = (value & 0x10) != 0;
+        self.DisableButtons = (value & 0x20) != 0;
+    }
+};
+
 pub const Tile = struct {
     data: [8][8]u2,
 };
@@ -53,7 +76,8 @@ pub const MMU = struct {
     // Not usable
     // unused: [0x60]u8,
     // IO registers
-    io_registers: [0x80]u8,
+    joypad: Joypad,
+    io_registers: [0x7F]u8,
     // High RAM
     hram: [0x7F]u8,
     // Interrupt Enable register
@@ -79,7 +103,15 @@ pub const MMU = struct {
             .echo_ram = std.mem.zeroes([0x2000]u8),
             // .oam = std.mem.zeroes([0xA0]u8),
             .oam = std.mem.zeroes([0x100]u8),
-            .io_registers = std.mem.zeroes([0x80]u8),
+            .joypad = Joypad{
+                .ARight = true,
+                .BLeft = true,
+                .SelectUp = true,
+                .StartDown = true,
+                .DisableButtons = true,
+                .DisableDpad = true,
+            },
+            .io_registers = std.mem.zeroes([0x7F]u8),
             .hram = std.mem.zeroes([0x7F]u8),
             .ie_register = InterruptFlags.init(null),
             .tileset = std.mem.zeroes([384]Tile),
@@ -104,7 +136,8 @@ pub const MMU = struct {
             // 0xFE00...0xFE9F => self.oam[addr - 0xFE00],
             // 0xFEA0...0xFEFF => 0x00, // Not Usable
             0xFE00...0xFEFF => self.oam[addr - 0xFE00],
-            0xFF00...0xFF7F => self.io_registers[addr - 0xFF00],
+            0xFF00 => self.joypad.read(),
+            0xFF01...0xFF7F => self.io_registers[addr - 0xFF01],
             0xFF80...0xFFFE => self.hram[addr - 0xFF80],
             0xFFFF => @bitCast(self.ie_register),
             // else => 0xFF,
@@ -128,9 +161,10 @@ pub const MMU = struct {
             // 0xFE00...0xFE9F => &self.oam[addr - 0xFE00],
             // 0xFEA0...0xFEFF => 0x00, // Not Usable
             0xFE00...0xFEFF => &self.oam[addr - 0xFE00],
-            0xFF00...0xFF7F => &self.io_registers[addr - 0xFF00],
+            0xFF00 => @ptrCast(&self.joypad),
+            0xFF01...0xFF7F => &self.io_registers[addr - 0xFF01],
             0xFF80...0xFFFE => &self.hram[addr - 0xFF80],
-            0xFFFF => @constCast(@as(*const u8, &@bitCast(self.ie_register))),
+            0xFFFF => @ptrCast(&self.ie_register),
             // else => 0xFF,
         };
     }
@@ -190,27 +224,28 @@ pub const MMU = struct {
             // 0xFE00...0xFE9F => self.oam[addr - 0xFE00] = value,
             // 0xFEA0...0xFEFF => {}, // Not Usable
             0xFE00...0xFEFF => self.oam[addr - 0xFE00] = value,
-            0xFF00...0xFF7F => {
+            0xFF00 => self.joypad.write(value),
+            0xFF01...0xFF7F => {
                 // Writing to the DIV register resets it
                 if (addr == 0xFF04) {
-                    self.io_registers[addr - 0xFF00] = 0;
+                    self.io_registers[addr - 0xFF01] = 0;
                     return;
                 }
 
-                self.io_registers[addr - 0xFF00] = value;
+                self.io_registers[addr - 0xFF01] = value;
 
                 // Check if bit 7 (transfer enable) of SC (Serial Transfer Control) is set
-                if (self.io_registers[0xFF02 - 0xFF00] == 0x81) {
+                if (self.io_registers[0xFF02 - 0xFF01] == 0x81) {
                     std.debug.print("{c}", .{self.io_registers[1]});
 
                     // Request serial interrupt that signals we've handled it.
-                    const IF: *InterruptFlags = @ptrCast(&self.io_registers[0xFF0F - 0xFF00]);
+                    const IF: *InterruptFlags = @ptrCast(&self.io_registers[0xFF0F - 0xFF01]);
                     IF.Serial = true;
 
                     // Signal that we've handled it by setting it back to disabled
                     // ~0x80 is every bit as 1 except the 7th, & this causes it to go
                     // low while keeping every other bit the same.
-                    self.io_registers[2] = self.io_registers[0xFF02 - 0xFF00] & ~@as(u8, 0x80);
+                    self.io_registers[2] = self.io_registers[0xFF02 - 0xFF01] & ~@as(u8, 0x80);
                 }
 
                 if (addr == 0xFF50) {
