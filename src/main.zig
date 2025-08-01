@@ -2,6 +2,7 @@
 //! you are building an executable. If you are making a library, the convention
 //! is to delete this file and start with root.zig instead.
 const std = @import("std");
+const clap = @import("clap");
 const c = @cImport({
     @cDefine("SDL_DISABLE_OLD_NAMEs", {});
     @cInclude("SDL3/SDL.h");
@@ -36,22 +37,25 @@ pub const GameBoyState = struct {
     /// Total cycles elapsed
     cycles: u64,
 
-    pub fn init(flags: ?cpu.Flags) !GameBoyState {
-        // Load bootrom to memory
-        // const boot_rom = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, "src/dmg_boot.bin", 256);
-        // defer std.heap.page_allocator.free(boot_rom);
-        // const boot_rom_slice = boot_rom[0..0x100].*;
+    pub fn init(boot_rom_path: ?[]const u8, game_rom_path: []const u8) !GameBoyState {
+        var boot_rom_slice: ?[0x100]u8 = null;
 
-        // const game_rom = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, "test_roms/01-special.gb", 1024 * 1024);
-        // const game_rom = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, "test_roms/02-interrupts.gb", 1024 * 1024);
-        const game_rom = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, "test_roms/cpu_instrs.gb", 1024 * 1024);
+        std.log.info("{?s}\n{s}\n", .{ boot_rom_path, game_rom_path });
+        // Load bootrom to memory
+        if (boot_rom_path != null) {
+            const boot_rom = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, boot_rom_path.?, 256);
+            defer std.heap.page_allocator.free(boot_rom);
+            boot_rom_slice = boot_rom[0..0x100].*;
+        }
+
+        const game_rom = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, game_rom_path, 1024 * 1024);
         defer std.heap.page_allocator.free(game_rom);
 
         const mmui = try allocator.create(MMU);
-        mmui.* = MMU.init(null, game_rom);
+        mmui.* = MMU.init(boot_rom_slice, game_rom);
 
         const cpui = try allocator.create(CPU);
-        cpui.* = CPU.init(cpu.Registers.init(flags), mmui, null, null, null);
+        cpui.* = CPU.init(cpu.Registers.init(), mmui, null, null, null);
 
         const ppui = try allocator.create(PPU);
         ppui.* = PPU.init(mmui);
@@ -130,7 +134,24 @@ fn fitAspect(img_w: f32, img_h: f32) struct { w: f32, h: f32 } {
 }
 
 pub fn main() !void {
-    var gameBoyState: GameBoyState = try GameBoyState.init(null);
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+
+    // First we specify what parameters our program can take.
+    // We can use `parseParamsComptime` to parse a string into an array of `Param(Help)`.
+    const params = comptime clap.parseParamsComptime(
+        \\-h, --help             Display this help and exit.
+        \\-b, --boot <str>   An option parameter, which takes a value.
+        \\<str>...
+        \\
+    );
+
+    const res = try clap.parse(clap.Help, &params, clap.parsers.default, .{
+        .allocator = gpa.allocator(),
+    });
+    defer res.deinit();
+
+    var gameBoyState: GameBoyState = try GameBoyState.init(res.args.boot, res.positionals[0][0]);
     defer gameBoyState.deinit();
 
     {

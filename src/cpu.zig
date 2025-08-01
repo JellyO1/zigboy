@@ -162,7 +162,7 @@ pub const CPU = struct {
 
     pub fn init(registers: ?Registers, mmu: *mmuz.MMU, ime: ?bool, ei_delay: ?bool, halt: ?bool) CPU {
         return .{
-            .registers = registers orelse Registers.init(null),
+            .registers = registers orelse Registers.init(),
             .mmu = mmu,
             .ime = ime orelse false,
             .ei_delay = ei_delay orelse false,
