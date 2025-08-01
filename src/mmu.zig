@@ -54,6 +54,33 @@ pub const Tile = struct {
 
 /// Memory Management Unit
 pub const MMU = struct {
+    pub const INT_VBLANK_ADDR = 0x40;
+    pub const INT_LCD_ADDR = 0x48;
+    pub const INT_TIMER_ADDR = 0x50;
+    pub const INT_SERIAL_ADDR = 0x58;
+    pub const INT_JOYPAD_ADDR = 0x60;
+
+    pub const SB_ADDR = 0xFF01;
+    pub const SC_ADDR = 0xFF02;
+    pub const DIV_ADDR = 0xFF04;
+    pub const TIMA_ADDR = 0xFF05;
+    pub const TMA_ADDR = 0xFF06;
+    pub const TAC_ADDR = 0xFF07;
+    pub const IF_ADDR = 0xFF0F;
+    pub const LCDC_ADDR = 0xFF40;
+    pub const STAT_ADDR = 0xFF41;
+    pub const BG_SCROLL_Y_ADDR = 0xFF42;
+    pub const BG_SCROLL_X_ADDR = 0xFF43;
+    pub const LY_ADDR = 0xFF44;
+    pub const LYC_ADDR = 0xFF45;
+    pub const BG_PALETTE_ADDR = 0xFF47;
+    pub const OBJ_0_PALETTE_ADDR = 0xFF48;
+    pub const OBJ_1_PALETTE_ADDR = 0xFF49;
+    pub const OBJ_WIN_Y_ADDR = 0xFF4A;
+    pub const OBJ_WIN_X_ADDR = 0xFF4B;
+    pub const BOOT_ROM_ENABLE_ADDR = 0xFF50;
+    pub const IE_ADDR = 0xFFFF;
+
     // Boot ROM (256 bytes)
     boot_rom: [0x100]u8,
     // Boot ROM enabled
@@ -226,29 +253,32 @@ pub const MMU = struct {
             0xFE00...0xFEFF => self.oam[addr - 0xFE00] = value,
             0xFF00 => self.joypad.write(value),
             0xFF01...0xFF7F => {
+                const start_addr = 0xFF01;
+                const normalized_addr = addr - start_addr;
+
                 // Writing to the DIV register resets it
-                if (addr == 0xFF04) {
-                    self.io_registers[addr - 0xFF01] = 0;
+                if (addr == DIV_ADDR) {
+                    self.io_registers[normalized_addr] = 0;
                     return;
                 }
 
-                self.io_registers[addr - 0xFF01] = value;
+                self.io_registers[normalized_addr] = value;
 
                 // Check if bit 7 (transfer enable) of SC (Serial Transfer Control) is set
-                if (self.io_registers[0xFF02 - 0xFF01] == 0x81) {
-                    std.debug.print("{c}", .{self.io_registers[1]});
+                if (self.io_registers[SC_ADDR - start_addr] == 0x81) {
+                    std.debug.print("{c}", .{self.io_registers[SB_ADDR - start_addr]});
 
                     // Request serial interrupt that signals we've handled it.
-                    const IF: *InterruptFlags = @ptrCast(&self.io_registers[0xFF0F - 0xFF01]);
+                    const IF: *InterruptFlags = @ptrCast(&self.io_registers[IF_ADDR - start_addr]);
                     IF.Serial = true;
 
                     // Signal that we've handled it by setting it back to disabled
                     // ~0x80 is every bit as 1 except the 7th, & this causes it to go
                     // low while keeping every other bit the same.
-                    self.io_registers[2] = self.io_registers[0xFF02 - 0xFF01] & ~@as(u8, 0x80);
+                    self.io_registers[SC_ADDR - start_addr] = self.io_registers[SC_ADDR - start_addr] & ~@as(u8, 0x80);
                 }
 
-                if (addr == 0xFF50) {
+                if (addr == BOOT_ROM_ENABLE_ADDR) {
                     self.boot_rom_enabled = value == 0x01; // 0x01 = Boot ROM enabled, 0x00 = Boot ROM disabled
                 }
             },

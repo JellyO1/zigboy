@@ -32,11 +32,11 @@ pub const Timer = struct {
 
     pub fn init(mmu: *mmuz.MMU) Timer {
         return .{
-            .div = mmu.readPtr(0xFF04),
-            .tima = mmu.readPtr(0xFF05),
-            .tma = mmu.readPtr(0xFF06),
-            .tac = @ptrCast(mmu.readPtr(0xFF07)),
-            .IF = @ptrCast(mmu.readPtr(0xFF0F)),
+            .div = mmu.readPtr(mmuz.MMU.DIV_ADDR),
+            .tima = mmu.readPtr(mmuz.MMU.TIMA_ADDR),
+            .tma = mmu.readPtr(mmuz.MMU.TMA_ADDR),
+            .tac = @ptrCast(mmu.readPtr(mmuz.MMU.TAC_ADDR)),
+            .IF = @ptrCast(mmu.readPtr(mmuz.MMU.IF_ADDR)),
             .cycles = 0,
             .divCycles = 0,
         };
