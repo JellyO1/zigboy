@@ -16,11 +16,6 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
-    const sdl = b.dependency("sdl", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
     // Add a build option for tracy
     const enable_tracy = b.option(bool, "enable_tracy", "Enable Tracy profiler integration") orelse if (optimize == .Debug) true else false;
 
@@ -61,7 +56,6 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
     exe.linkLibC();
-    exe.root_module.linkLibrary(sdl.artifact("SDL3"));
     exe.linkLibrary(cimgui_dep.artifact("cimgui"));
 
     if (enable_tracy) {
