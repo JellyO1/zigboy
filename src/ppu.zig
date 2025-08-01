@@ -116,7 +116,7 @@ pub const PPU = struct {
     IF: *mmuz.InterruptFlags,
 
     pub fn init(mmu: *mmuz.MMU) PPU {
-        const lcdc: *LCDControl = @ptrCast(mmu.readPtr(0xFF40));
+        const lcdc: *LCDControl = @ptrCast(mmu.readPtr(mmuz.MMU.LCDC_ADDR));
 
         // Enable PPU
         // lcdc.LcdPpuEnable = true;
@@ -128,17 +128,17 @@ pub const PPU = struct {
             .modeClock = 0,
             .framebuffer = std.mem.zeroes([160 * 144]RGBA),
             .lcdc = lcdc,
-            .stat = @ptrCast(mmu.readPtr(0xFF41)),
-            .bgScrollY = mmu.readPtr(0xFF42),
-            .bgScrollX = mmu.readPtr(0xFF43),
-            .scanline = mmu.readPtr(0xFF44),
-            .lyc = mmu.readPtr(0xFF45),
-            .bgp = @ptrCast(mmu.readPtr(0xFF47)),
-            .op0 = @ptrCast(mmu.readPtr(0xFF48)),
-            .op1 = @ptrCast(mmu.readPtr(0xFF49)),
-            .winY = mmu.readPtr(0xFF4A),
-            .winX = mmu.readPtr(0xFF4B),
-            .IF = @ptrCast(mmu.readPtr(0xFF0F)),
+            .stat = @ptrCast(mmu.readPtr(mmuz.MMU.STAT_ADDR)),
+            .bgScrollY = mmu.readPtr(mmuz.MMU.BG_SCROLL_Y_ADDR),
+            .bgScrollX = mmu.readPtr(mmuz.MMU.BG_SCROLL_X_ADDR),
+            .scanline = mmu.readPtr(mmuz.MMU.LY_ADDR),
+            .lyc = mmu.readPtr(mmuz.MMU.LYC_ADDR),
+            .bgp = @ptrCast(mmu.readPtr(mmuz.MMU.BG_PALETTE_ADDR)),
+            .op0 = @ptrCast(mmu.readPtr(mmuz.MMU.OBJ_0_PALETTE_ADDR)),
+            .op1 = @ptrCast(mmu.readPtr(mmuz.MMU.OBJ_1_PALETTE_ADDR)),
+            .winY = mmu.readPtr(mmuz.MMU.OBJ_WIN_Y_ADDR),
+            .winX = mmu.readPtr(mmuz.MMU.OBJ_WIN_X_ADDR),
+            .IF = @ptrCast(mmu.readPtr(mmuz.MMU.IF_ADDR)),
         };
     }
 

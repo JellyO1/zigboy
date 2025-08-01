@@ -726,7 +726,7 @@ pub const CPU = struct {
 
     fn checkInterrups(self: *CPU) u32 {
         var cycles: u32 = 1;
-        const pending: u8 = self.mmu.read(0xFFFF) & self.mmu.read(0xFF0F) & 0x1F;
+        const pending: u8 = self.mmu.read(mmuz.MMU.IE_ADDR) & self.mmu.read(mmuz.MMU.IF_ADDR) & 0x1F;
         if (pending != 0) {
             // Interrupt halt if there's an interrupt pending
             if (self.halt) {
@@ -735,32 +735,32 @@ pub const CPU = struct {
 
             // Handle interrupts if IME is enabled
             if (self.ime) {
-                const IF: *mmuz.InterruptFlags = @ptrCast(self.mmu.readPtr(0xFF0F));
+                const IF: *mmuz.InterruptFlags = @ptrCast(self.mmu.readPtr(mmuz.MMU.IF_ADDR));
 
                 if (IF.VBlank and self.mmu.ie_register.VBlank) {
                     self.ime = false;
                     IF.VBlank = false;
-                    cycles += self.handleInterrupt(0x40);
+                    cycles += self.handleInterrupt(mmuz.MMU.INT_VBLANK_ADDR);
                 } else if (IF.Timer and self.mmu.ie_register.Timer) {
                     self.ime = false;
                     IF.Timer = false;
 
-                    cycles += self.handleInterrupt(0x50);
+                    cycles += self.handleInterrupt(mmuz.MMU.INT_TIMER_ADDR);
                 } else if (IF.Serial and self.mmu.ie_register.Serial) {
                     self.ime = false;
                     IF.Serial = false;
 
-                    cycles += self.handleInterrupt(0x58);
+                    cycles += self.handleInterrupt(mmuz.MMU.INT_SERIAL_ADDR);
                 } else if (IF.LCD and self.mmu.ie_register.LCD) {
                     self.ime = false;
                     IF.LCD = false;
 
-                    cycles += self.handleInterrupt(0x48);
+                    cycles += self.handleInterrupt(mmuz.MMU.INT_LCD_ADDR);
                 } else if (IF.Joypad and self.mmu.ie_register.Joypad) {
                     self.ime = false;
                     IF.Joypad = false;
 
-                    cycles += self.handleInterrupt(0x60);
+                    cycles += self.handleInterrupt(mmuz.MMU.INT_JOYPAD_ADDR);
                 }
             }
         }
@@ -1380,28 +1380,28 @@ pub const CPU = struct {
     /// Copy the value in the register A to the byte pointed to by HL and increment HL
     fn ld_hli_a(self: *CPU) u32 {
         self.mmu.write(self.registers.getWord(Registers.Word.HL), self.registers.A);
-        self.registers.setWord(Registers.Word.HL, self.registers.getWord(Registers.Word.HL) + 1);
+        self.registers.setWord(Registers.Word.HL, self.registers.getWord(Registers.Word.HL) +% 1);
         return MCycle * 2;
     }
 
     /// Copy the value in the register A to the byte pointed to by HL and decrement HL
     fn ld_hld_a(self: *CPU) u32 {
         self.mmu.write(self.registers.getWord(Registers.Word.HL), self.registers.A);
-        self.registers.setWord(Registers.Word.HL, self.registers.getWord(Registers.Word.HL) - 1);
+        self.registers.setWord(Registers.Word.HL, self.registers.getWord(Registers.Word.HL) -% 1);
         return MCycle * 2;
     }
 
     /// Copy the value in the byte pointed to by HL to the register A and decrement HL
     fn ld_a_hld(self: *CPU) u32 {
         self.registers.A = self.mmu.read(self.registers.getWord(Registers.Word.HL));
-        self.registers.setWord(Registers.Word.HL, self.registers.getWord(Registers.Word.HL) - 1);
+        self.registers.setWord(Registers.Word.HL, self.registers.getWord(Registers.Word.HL) -% 1);
         return MCycle * 2;
     }
 
     /// Copy the value in the byte pointed to by HL to the register A and increment HL
     fn ld_a_hli(self: *CPU) u32 {
         self.registers.A = self.mmu.read(self.registers.getWord(Registers.Word.HL));
-        self.registers.setWord(Registers.Word.HL, self.registers.getWord(Registers.Word.HL) + 1);
+        self.registers.setWord(Registers.Word.HL, self.registers.getWord(Registers.Word.HL) +% 1);
         return MCycle * 2;
     }
 
