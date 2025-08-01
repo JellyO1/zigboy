@@ -55,7 +55,20 @@ pub const GameBoyState = struct {
         mmui.* = MMU.init(boot_rom_slice, game_rom);
 
         const cpui = try allocator.create(CPU);
-        cpui.* = CPU.init(cpu.Registers.init(), mmui, null, null, null);
+        cpui.* = CPU.init(if (boot_rom_path == null) cpu.Registers{
+            .A = 0x11,
+            .B = 0x00,
+            .C = 0x00,
+            .D = 0xFF,
+            .E = 0x56,
+            .H = 0x00,
+            .L = 0x0D,
+            .F = cpu.Flags.init(.{
+                .Z = true,
+            }),
+            .PC = 0x100,
+            .SP = 0xFFFE,
+        } else cpu.Registers.init(), mmui, null, null, null);
 
         const ppui = try allocator.create(PPU);
         ppui.* = PPU.init(mmui);
