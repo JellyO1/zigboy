@@ -58,6 +58,8 @@ const Color = enum(u2) {
     Black,
 };
 
+pub const Tilemap = enum(u1) { T9800, T9C00 };
+
 const Palette = packed struct(u8) {
     ID0: Color = .White,
     ID1: Color = .White,
@@ -230,13 +232,10 @@ pub const PPU = struct {
 
     fn renderBackground(self: *PPU, x: usize) void {
         const xu8: u8 = @intCast(x);
-        //const as_u8: u8 = @bitCast(self.lcdc.*);
-        //std.debug.print("{b:0>8}\n", .{as_u8});
+
         if (self.lcdc.BgWinEnable) {
             const bgX: u8 = xu8 +% self.bgScrollX.*;
             const bgY: u8 = self.scanline.* +% self.bgScrollY.*;
-            // const bgX: u8 = @intCast(x);
-            // const bgY: u8 = self.scanline.*;
 
             const tileX: u16 = bgX / 8;
             const tileY: u16 = bgY / 8;
@@ -245,24 +244,17 @@ pub const PPU = struct {
             const pixelY: u8 = bgY % 8;
 
             const tileMapAddr: u16 = if (self.lcdc.BgTileMapArea) 0x9C00 else 0x9800;
-            var tileIndex: u16 = self.mmu.read(tileMapAddr + @as(u16, @intCast(tileY * 32 + tileX)));
+            const tileIndex: u8 = @intCast(self.mmu.read(tileMapAddr + @as(u16, @intCast(tileY * 32 + tileX))));
 
-            if (!self.lcdc.BgWinTileDataArea) {
-                // std.debug.panic("8800 method, {}\n", .{tileIndex});
-                const rem = @rem(tileIndex, 256);
-                const res = (tileIndex + 256) % 384;
-                //std.debug.panic("{} {}", .{ res, rem });
-
-                if (rem > 0) {
-                    std.debug.panic("{} {}", .{ res, rem });
-                    tileIndex = 128 + rem;
-                } else {
-                    tileIndex = res;
-                }
+            var cacheIndex: usize = 0;
+            if (self.lcdc.BgWinTileDataArea) {
+                cacheIndex = tileIndex; // 0..255
+            } else {
+                const signedIndex: i8 = @bitCast(tileIndex); // -128..127
+                cacheIndex = @as(usize, @bitCast(@as(isize, signedIndex) + 256)); // 128..383
             }
 
-            const tile = self.mmu.tileset[tileIndex];
-
+            const tile = self.mmu.tileset[cacheIndex];
             const color = tile.data[pixelY][pixelX];
             // const palette = self.bgp;
             // const colorValue = palette.get(color);
@@ -276,6 +268,68 @@ pub const PPU = struct {
         self.stat.LYCEqualsLY = self.scanline.* == self.lyc.*;
         if (self.stat.LYCEqualsLY and self.stat.LYC) {
             self.IF.LCD = true;
+        }
+    }
+
+    pub fn debugTileset(state: *PPU, buffer: *[128 * 192]RGBA) void {
+        const tilesPerRow = 16; // 16 tiles per row
+        const tileSize = 8; // 8x8 pixels per tile
+
+        for (state.mmu.tileset, 0..) |tile, tileIndex| {
+            const tileX = tileIndex % tilesPerRow; // 0..15
+            const tileY = tileIndex / tilesPerRow; // 0..23
+
+            // Loop through every pixel
+            inline for (0..8) |pixelXIndex| {
+                inline for (0..8) |pixelYIndex| {
+                    const colorIndex = tile.data[pixelYIndex][pixelXIndex];
+                    const color = PaletteColors[colorIndex];
+
+                    const pixelX = tileX * tileSize + pixelXIndex;
+                    const pixelY = tileY * tileSize + pixelYIndex;
+                    const bufferIndex = pixelY * (tilesPerRow * tileSize) + pixelX;
+                    buffer[bufferIndex] = color;
+                }
+            }
+        }
+    }
+
+    pub fn debugTilemap(state: *PPU, buffer: *[256 * 256]RGBA, tilemap: Tilemap) void {
+        if (tilemap == Tilemap.T9800) {
+            for (0x9800..0x9C00) |addr| {
+                drawDebugTilemap(state, addr, buffer, tilemap);
+            }
+        } else {
+            for (0x9C00..0xA000) |addr| {
+                drawDebugTilemap(state, addr, buffer, tilemap);
+            }
+        }
+    }
+
+    fn drawDebugTilemap(state: *PPU, addr: usize, buffer: *[256 * 256]RGBA, tilemap: Tilemap) void {
+        const u16Addr: u16 = @intCast(addr);
+        const tilesPerRow: u16 = 32; // 32 tiles per row
+        const tileSize: u16 = 8; // 8x8 pixels per tile
+
+        const tileI = if (tilemap == Tilemap.T9800) u16Addr - 0x9800 else u16Addr - 0x9C00;
+        const tileX: u16 = tileI % tilesPerRow; // 0..31
+        const tileY: u16 = tileI / tilesPerRow; // 0..31
+
+        const tileIndex: u8 = state.mmu.read(u16Addr);
+        const tile = state.mmu.tileset[tileIndex];
+
+        // Loop through every pixel
+        inline for (0..8) |pixelXIndex| {
+            inline for (0..8) |pixelYIndex| {
+                const colorIndex = tile.data[pixelYIndex][pixelXIndex];
+                const color = PaletteColors[colorIndex];
+
+                const pixelX = tileX * tileSize + pixelXIndex;
+                const pixelY = tileY * tileSize + pixelYIndex;
+                const bufferIndex = pixelY * (tilesPerRow * tileSize) + pixelX;
+
+                buffer[bufferIndex] = color;
+            }
         }
     }
 };

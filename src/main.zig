@@ -109,134 +109,12 @@ pub const GameBoyState = struct {
         // sleep for the number of nanoseconds equivalent to the number of cycles
         // std.time.sleep((cycles / CPUClockRate) * std.time.ns_per_s);
     }
+
+        }
+
+        }
+    }
 };
-
-pub fn debugTileData(state: *GameBoyState, buffer: *[192 * 128]ppu.RGBA) void {
-    const colors = [4]ppu.RGBA{
-        .{ .r = 255, .g = 255, .b = 255, .a = 255 },
-        .{ .r = 192, .g = 192, .b = 192, .a = 255 },
-        .{ .r = 96, .g = 96, .b = 96, .a = 255 },
-        .{ .r = 0, .g = 0, .b = 0, .a = 255 },
-    };
-
-    const tilesPerRow = 24; // 24 tiles per row
-    const tileSize = 8; // 8x8 pixels per tile
-
-    for (0x8000..0x97FF) |addr| {
-        const normalizedAddr = addr - 0x8000;
-
-        if (normalizedAddr % 2 != 0) continue;
-        //const row = normalizedAddr / 2;
-
-        const tileIndex = normalizedAddr / 16; // Each tile is 16 bytes, 2 bytes per each row of pixels (8 pixels)
-        const rowInTile = (normalizedAddr % 16) / 2; // 0..7
-
-        const tileX = tileIndex % tilesPerRow; // 0..23
-        const tileY = tileIndex / tilesPerRow; // 0..15
-
-        const highByte = state.mmu.read(@intCast(addr));
-        const lowByte = state.mmu.read(@intCast(addr + 1));
-
-        // Loop through every pixel in the row
-        inline for (0..8) |pixelIndex| {
-            const bitIndex: u8 = 1 << (7 - pixelIndex);
-            const lowBit: u8 = lowByte & bitIndex;
-            const highBit: u8 = highByte & bitIndex;
-            const colorIndex = if (highBit == 0) @as(u2, 0b00) else @as(u2, 0b10) | if (lowBit == 0) @as(u2, 0b00) else @as(u2, 0b01);
-            const color = colors[colorIndex];
-
-            const pixelX = tileX * tileSize + pixelIndex;
-            const pixelY = tileY * tileSize + rowInTile;
-            const bufferIndex = pixelY * (tilesPerRow * tileSize) + pixelX;
-            buffer[bufferIndex] = color;
-        }
-    }
-}
-
-pub fn debugTileset(state: *GameBoyState, buffer: *[192 * 128]ppu.RGBA) void {
-    const colors = [4]ppu.RGBA{
-        .{ .r = 255, .g = 255, .b = 255, .a = 255 },
-        .{ .r = 192, .g = 192, .b = 192, .a = 255 },
-        .{ .r = 96, .g = 96, .b = 96, .a = 255 },
-        .{ .r = 0, .g = 0, .b = 0, .a = 255 },
-    };
-
-    const tilesPerRow = 24; // 24 tiles per row
-    const tileSize = 8; // 8x8 pixels per tile
-
-    for (state.mmu.tileset, 0..) |tile, tileIndex| {
-        const tileX = tileIndex % tilesPerRow; // 0..23
-        const tileY = tileIndex / tilesPerRow; // 0..15
-
-        // Loop through every pixel
-        inline for (0..8) |pixelXIndex| {
-            inline for (0..8) |pixelYIndex| {
-                const colorIndex = tile.data[pixelYIndex][pixelXIndex];
-                const color = colors[colorIndex];
-
-                const pixelX = tileX * tileSize + pixelXIndex;
-                const pixelY = tileY * tileSize + pixelYIndex;
-                const bufferIndex = pixelY * (tilesPerRow * tileSize) + pixelX;
-                buffer[bufferIndex] = color;
-            }
-        }
-    }
-}
-
-pub fn debugTilemap(state: *GameBoyState, buffer: *[256 * 256]ppu.RGBA, tilemap1: bool) void {
-    if (tilemap1) {
-        for (0x9800..0x9FFF) |addr| {
-            draw(state, addr, buffer);
-        }
-    } else {
-        for (0x9C00..0x9FFF) |addr| {
-            draw(state, addr, buffer);
-        }
-    }
-}
-
-fn draw(state: *GameBoyState, addr: usize, buffer: *[256 * 256]ppu.RGBA) void {
-    const colors = [4]ppu.RGBA{
-        .{ .r = 255, .g = 255, .b = 255, .a = 255 },
-        .{ .r = 192, .g = 192, .b = 192, .a = 255 },
-        .{ .r = 96, .g = 96, .b = 96, .a = 255 },
-        .{ .r = 0, .g = 0, .b = 0, .a = 255 },
-    };
-
-    const tilesPerRow = 32; // 32 tiles per row
-    const tileSize = 8; // 8x8 pixels per tile
-
-    var tileIndex: u16 = state.mmu.read(@intCast(addr));
-
-    if (!state.ppu.lcdc.BgWinTileDataArea) {
-        const rem = @rem(tileIndex, 256);
-        const res = (tileIndex + 256) % 384;
-
-        if (rem > 0) {
-            tileIndex = 128 + rem;
-        } else {
-            tileIndex = res;
-        }
-    }
-
-    const tileX = tileIndex % tilesPerRow; // 0..32
-    const tileY = tileIndex / tilesPerRow; // 0..32
-
-    const tile = state.mmu.tileset[tileIndex];
-
-    // Loop through every pixel
-    inline for (0..8) |pixelXIndex| {
-        inline for (0..8) |pixelYIndex| {
-            const colorIndex = tile.data[pixelYIndex][pixelXIndex];
-            const color = colors[colorIndex];
-
-            const pixelX = tileX * tileSize + pixelXIndex;
-            const pixelY = tileY * tileSize + pixelYIndex;
-            const bufferIndex = pixelY * (tilesPerRow * tileSize) + pixelX;
-            buffer[bufferIndex] = color;
-        }
-    }
-}
 
 fn fitAspect(img_w: f32, img_h: f32) struct { w: f32, h: f32 } {
     const avail = c.ImGui_GetContentRegionAvail();
@@ -263,7 +141,7 @@ pub fn main() !void {
         const mainWindow, const mainRenderer = try graphics.createWindow(@as([]const u8, "ZigBoy"), 1920, 1080);
         defer graphics.destroyWindow(mainWindow, mainRenderer);
         const framebufferTexture = c.SDL_CreateTexture(@ptrCast(mainRenderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 160, 144);
-        const tileTexture = c.SDL_CreateTexture(@ptrCast(mainRenderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 192, 128);
+        const tileTexture = c.SDL_CreateTexture(@ptrCast(mainRenderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 128, 192);
         const tilemapTexture = c.SDL_CreateTexture(@ptrCast(mainRenderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 256, 256);
         const tilemap2Texture = c.SDL_CreateTexture(@ptrCast(mainRenderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 256, 256);
 
@@ -318,15 +196,15 @@ pub fn main() !void {
                 _ = c.SDL_UpdateTexture(framebufferTexture, null, &gameBoyState.ppu.framebuffer, 160 * @sizeOf(ppu.RGBA));
 
                 _ = c.SDL_LockTexture(tileTexture, null, &tileBuffer, &tilePitch);
-                debugTileset(&gameBoyState, @ptrCast(@alignCast(tileBuffer)));
+                gameBoyState.ppu.debugTileset(@ptrCast(@alignCast(tileBuffer)));
                 _ = c.SDL_UnlockTexture(tileTexture);
 
                 _ = c.SDL_LockTexture(tilemapTexture, null, &tilemapBuffer, &tilemapPitch);
-                debugTilemap(&gameBoyState, @ptrCast(@alignCast(tilemapBuffer)), true);
+                gameBoyState.ppu.debugTilemap(@ptrCast(@alignCast(tilemapBuffer)), ppu.Tilemap.T9800);
                 _ = c.SDL_UnlockTexture(tilemapTexture);
 
                 _ = c.SDL_LockTexture(tilemap2Texture, null, &tilemap2Buffer, &tilemap2Pitch);
-                debugTilemap(&gameBoyState, @ptrCast(@alignCast(tilemap2Buffer)), false);
+                gameBoyState.ppu.debugTilemap(@ptrCast(@alignCast(tilemap2Buffer)), ppu.Tilemap.T9C00);
                 _ = c.SDL_UnlockTexture(tilemap2Texture);
 
                 var windowFlags: c_int = c.ImGuiWindowFlags_MenuBar | c.ImGuiWindowFlags_NoDocking;
