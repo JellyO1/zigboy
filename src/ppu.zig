@@ -44,7 +44,7 @@ pub const RGBA = packed struct(u32) {
     r: u8,
 };
 
-const PaletteColors = [4]RGBA{
+const BGPaletteColors = [4]RGBA{
     .{ .r = 255, .g = 255, .b = 255, .a = 255 },
     .{ .r = 192, .g = 192, .b = 192, .a = 255 },
     .{ .r = 96, .g = 96, .b = 96, .a = 255 },
@@ -95,12 +95,14 @@ pub const PPU = struct {
     lcdc: *LCDControl,
     /// LCD Status register
     stat: *LCDStatus,
-    /// Background Y scroll (SCX)
+    /// Background Y scroll (SCY)
     bgScrollY: *u8,
-    /// Background X scroll (SCY)
+    /// Background X scroll (SCX)
     bgScrollX: *u8,
     /// Current scanline (LY) (0-153)
     scanline: *u8,
+    /// Internal window LY
+    winLY: u8,
     /// LY compare register
     lyc: *u8,
     /// Background palette
@@ -118,10 +120,6 @@ pub const PPU = struct {
     pub fn init(mmu: *mmuz.MMU) PPU {
         const lcdc: *LCDControl = @ptrCast(mmu.readPtr(mmuz.MMU.LCDC_ADDR));
 
-        // Enable PPU
-        // lcdc.LcdPpuEnable = true;
-        // lcdc.BgWinEnable = true;
-
         return .{
             .mode = Mode.OAM,
             .mmu = mmu,
@@ -132,6 +130,7 @@ pub const PPU = struct {
             .bgScrollY = mmu.readPtr(mmuz.MMU.BG_SCROLL_Y_ADDR),
             .bgScrollX = mmu.readPtr(mmuz.MMU.BG_SCROLL_X_ADDR),
             .scanline = mmu.readPtr(mmuz.MMU.LY_ADDR),
+            .winLY = 0,
             .lyc = mmu.readPtr(mmuz.MMU.LYC_ADDR),
             .bgp = @ptrCast(mmu.readPtr(mmuz.MMU.BG_PALETTE_ADDR)),
             .op0 = @ptrCast(mmu.readPtr(mmuz.MMU.OBJ_0_PALETTE_ADDR)),
@@ -216,6 +215,7 @@ pub const PPU = struct {
                             }
 
                             self.scanline.* = 0;
+                            self.winLY = 0;
                         }
                     }
                 },
@@ -224,9 +224,22 @@ pub const PPU = struct {
     }
 
     fn renderScanline(self: *PPU) void {
+        var winYIncremented = false;
         for (0..160) |x| {
             self.renderBackground(x);
-            if (self.lcdc.WinEnable) {}
+
+            // Increment the internal winLY
+            // NOTE: Why is there a missing row when using 'self.scanline.* >= self.winY.*'
+            if (self.lcdc.WinEnable and
+                self.scanline.* > self.winY.* and @as(u8, @intCast(x)) >= (self.winX.* -| 7) and
+                !winYIncremented)
+            {
+                self.winLY +%= 1;
+                winYIncremented = true;
+            }
+
+            self.renderWindow(x);
+            self.renderSprites(x);
         }
     }
 
@@ -256,12 +269,63 @@ pub const PPU = struct {
 
             const tile = self.mmu.tileset[cacheIndex];
             const color = tile.data[pixelY][pixelX];
-            // const palette = self.bgp;
-            // const colorValue = palette.get(color);
+            const palette = self.bgp;
+            const colorValue = palette.get(color);
 
             const frameBufferIndex = x + @as(usize, @intCast((self.scanline.*))) * 160;
-            self.framebuffer[frameBufferIndex] = PaletteColors[color];
+            self.framebuffer[frameBufferIndex] = BGPaletteColors[@intFromEnum(colorValue)];
+        } else {
+            // TODO: change framebuffer init to be 0xFF instead of zeroes
+            const palette = self.bgp;
+            const colorValue = palette.get(0);
+
+            const frameBufferIndex = x + @as(usize, @intCast((self.scanline.*))) * 160;
+            self.framebuffer[frameBufferIndex] = BGPaletteColors[@intFromEnum(colorValue)];
         }
+    }
+
+    fn renderWindow(self: *PPU, x: usize) void {
+        const xu8: u8 = @intCast(x);
+
+        if (self.lcdc.WinEnable and self.lcdc.BgWinEnable and self.scanline.* >= self.winY.* and xu8 >= (self.winX.* -| 7)) {
+            // -| is saturating subtraction, meaning it clamps to 0
+            const wX: u16 = xu8 - (@as(u16, self.winX.*) -| 7);
+            const wY: u16 = self.scanline.* - self.winY.*;
+
+            // std.log.info("winY:{} winX:{} wX:{} wY:{} winLY:{} scanline: {}\n", .{ self.winY.*, self.winX.*, wX, wY, self.winLY, self.scanline.* });
+
+            const tileX: u16 = wX / 8;
+            const tileY: u16 = self.winLY / 8;
+
+            // std.log.info("tileX:{} tileY:{} other:{}\n", .{ &tileX, &tileY, tileY * 32 + tileX });
+
+            const pixelX = wX % 8;
+            const pixelY = wY % 8;
+
+            const tileMapAddr: u16 = if (self.lcdc.WinTileMapArea) 0x9C00 else 0x9800;
+            const tileIndex: u8 = @intCast(self.mmu.read(tileMapAddr + @as(u16, @intCast(tileY * 32 + tileX))));
+
+            var cacheIndex: usize = 0;
+            if (self.lcdc.BgWinTileDataArea) {
+                cacheIndex = tileIndex; // 0..255
+            } else {
+                const signedIndex: i8 = @bitCast(tileIndex); // -128..127
+                cacheIndex = @as(usize, @bitCast(@as(isize, signedIndex) + 256)); // 128..383
+            }
+
+            const tile = self.mmu.tileset[cacheIndex];
+            const color = tile.data[pixelY][pixelX];
+            const palette = self.bgp;
+            const colorValue = palette.get(color);
+
+            const frameBufferIndex = xu8 + @as(usize, @intCast((self.scanline.*))) * 160;
+            self.framebuffer[frameBufferIndex] = BGPaletteColors[@intFromEnum(colorValue)];
+        }
+    }
+
+    fn renderSprites(self: *PPU, x: usize) void {
+        _ = self;
+        _ = x;
     }
 
     fn setLYCEqualsLY(self: *PPU) void {
@@ -283,7 +347,7 @@ pub const PPU = struct {
             inline for (0..8) |pixelXIndex| {
                 inline for (0..8) |pixelYIndex| {
                     const colorIndex = tile.data[pixelYIndex][pixelXIndex];
-                    const color = PaletteColors[colorIndex];
+                    const color = BGPaletteColors[colorIndex];
 
                     const pixelX = tileX * tileSize + pixelXIndex;
                     const pixelY = tileY * tileSize + pixelYIndex;
@@ -322,7 +386,7 @@ pub const PPU = struct {
         inline for (0..8) |pixelXIndex| {
             inline for (0..8) |pixelYIndex| {
                 const colorIndex = tile.data[pixelYIndex][pixelXIndex];
-                const color = PaletteColors[colorIndex];
+                const color = BGPaletteColors[colorIndex];
 
                 const pixelX = tileX * tileSize + pixelXIndex;
                 const pixelY = tileY * tileSize + pixelYIndex;
