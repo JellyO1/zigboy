@@ -45,10 +45,17 @@ pub const RGBA = packed struct(u32) {
 };
 
 const BGPaletteColors = [4]RGBA{
-    .{ .r = 255, .g = 255, .b = 255, .a = 255 },
-    .{ .r = 192, .g = 192, .b = 192, .a = 255 },
-    .{ .r = 96, .g = 96, .b = 96, .a = 255 },
-    .{ .r = 0, .g = 0, .b = 0, .a = 255 },
+    .{ .r = 232, .g = 252, .b = 204, .a = 255 },
+    .{ .r = 172, .g = 212, .b = 144, .a = 255 },
+    .{ .r = 84, .g = 140, .b = 112, .a = 255 },
+    .{ .r = 20, .g = 44, .b = 56, .a = 255 },
+};
+
+const OBJPaletteColors = [4]RGBA{
+    .{ .r = 232, .g = 252, .b = 204, .a = 255 },
+    .{ .r = 172, .g = 212, .b = 144, .a = 255 },
+    .{ .r = 84, .g = 140, .b = 112, .a = 255 },
+    .{ .r = 20, .g = 44, .b = 56, .a = 255 },
 };
 
 const Color = enum(u2) {
@@ -74,6 +81,28 @@ const Palette = packed struct(u8) {
             3 => self.ID3,
         };
     }
+};
+
+pub const ObjectAttributes = packed struct(u8) {
+    /// CGB only. Which of OBP0–7 to use
+    CGBPalette: u3,
+    /// CGB only. 0 = Fetch tile from VRAM bank 0, 1 = Fetch tile from VRAM bank 1
+    Bank: bool,
+    /// 0 = OBP0, 1 = OBP1
+    DMGPalette: bool,
+    /// 0 = Normal, 1 = Entire OBJ is horizontally mirrored
+    XFlip: bool,
+    /// 0 = Normal, 1 = Entire OBJ is vertically mirrored
+    YFlip: bool,
+    /// 0 = No, 1 = BG and Window color indices 1–3 are drawn over this OBJ
+    Priority: bool,
+};
+
+pub const Object = packed struct(u32) {
+    posY: u8,
+    posX: u8,
+    tileIndex: u8,
+    attributes: ObjectAttributes,
 };
 
 const Mode = enum(u2) {
@@ -117,8 +146,12 @@ pub const PPU = struct {
     winX: *u8,
     IF: *mmuz.InterruptFlags,
 
-    pub fn init(mmu: *mmuz.MMU) PPU {
+    /// OAM Scan results
+    objects: std.ArrayList(Object),
+
+    pub fn init(mmu: *mmuz.MMU, allocator: std.mem.Allocator) PPU {
         const lcdc: *LCDControl = @ptrCast(mmu.readPtr(mmuz.MMU.LCDC_ADDR));
+        const objects = std.ArrayList(Object).initCapacity(allocator, 10) catch |err| std.debug.panic("{}", .{err});
 
         return .{
             .mode = Mode.OAM,
@@ -138,7 +171,12 @@ pub const PPU = struct {
             .winY = mmu.readPtr(mmuz.MMU.OBJ_WIN_Y_ADDR),
             .winX = mmu.readPtr(mmuz.MMU.OBJ_WIN_X_ADDR),
             .IF = @ptrCast(mmu.readPtr(mmuz.MMU.IF_ADDR)),
+            .objects = objects,
         };
+    }
+
+    pub fn deinit(self: *PPU) void {
+        self.objects.deinit();
     }
 
     pub fn step(self: *PPU, cycles: u32) void {
@@ -154,6 +192,7 @@ pub const PPU = struct {
                 .OAM => {
                     if (self.modeClock % 80 == 0) {
                         self.modeClock = 0;
+                        self.OAMScan();
                         self.mode = .Drawing;
                         self.stat.Mode = self.mode;
                     }
@@ -223,6 +262,29 @@ pub const PPU = struct {
         }
     }
 
+    fn OAMScan(self: *PPU) void {
+        // clear old scanline selection
+        self.objects.clearRetainingCapacity();
+
+        for (0..40) |index| {
+            const obj = self.mmu.readObj(@intCast(index));
+
+            // If this object is not in the current scanline ignore
+            if (self.scanline.* + 16 < obj.posY or self.scanline.* >= obj.posY) continue;
+
+            // std.log.info("{}", .{obj});
+            self.objects.append(obj) catch |err| std.debug.panic("{}", .{err});
+
+            // Only select 10 objects per line.
+            if (self.objects.items.len == 10) {
+                return;
+            }
+        }
+
+        // std.log.info("{}", .{self.objects});
+        // std.debug.panic("", .{});
+    }
+
     fn renderScanline(self: *PPU) void {
         var winYIncremented = false;
         for (0..160) |x| {
@@ -239,7 +301,7 @@ pub const PPU = struct {
             }
 
             self.renderWindow(x);
-            self.renderSprites(x);
+            self.renderObjects(x);
         }
     }
 
@@ -292,12 +354,8 @@ pub const PPU = struct {
             const wX: u16 = xu8 - (@as(u16, self.winX.*) -| 7);
             const wY: u16 = self.scanline.* - self.winY.*;
 
-            // std.log.info("winY:{} winX:{} wX:{} wY:{} winLY:{} scanline: {}\n", .{ self.winY.*, self.winX.*, wX, wY, self.winLY, self.scanline.* });
-
             const tileX: u16 = wX / 8;
             const tileY: u16 = self.winLY / 8;
-
-            // std.log.info("tileX:{} tileY:{} other:{}\n", .{ &tileX, &tileY, tileY * 32 + tileX });
 
             const pixelX = wX % 8;
             const pixelY = wY % 8;
@@ -323,9 +381,42 @@ pub const PPU = struct {
         }
     }
 
-    fn renderSprites(self: *PPU, x: usize) void {
-        _ = self;
-        _ = x;
+    fn renderObjects(self: *PPU, x: usize) void {
+        const xu8: u8 = @intCast(x);
+
+        if (self.lcdc.ObjEnable) {
+            for (self.objects.items) |obj| {
+                // If this is 8x8 and we've already drawn everything go to the next obj
+                if (!self.lcdc.ObjSize and self.scanline.* >= obj.posY - 8) continue;
+
+                if (x + 8 < obj.posX or x >= obj.posX) continue;
+                // std.log.info("ly: {}, lx: {}, {}", .{ self.scanline.*, xu8, obj });
+
+                // posX is hardware offset by +8 so the screenX is actually posX - 8
+                const pixelX: u8 = @intCast((x - (obj.posX - 8)) % 8);
+                const pixelY: u8 = self.scanline.* % 8;
+
+                var tileIndex: u8 = undefined;
+
+                if (self.lcdc.ObjSize) {
+                    if ((self.scanline.* + 8) -| obj.posY > 8) {
+                        tileIndex = obj.tileIndex | 0x01;
+                    } else {
+                        tileIndex = obj.tileIndex & 0xFE;
+                    }
+                } else tileIndex = obj.tileIndex;
+                const tile = self.mmu.tileset[tileIndex];
+                const color = tile.data[if (obj.attributes.YFlip) 7 - pixelY else pixelY][if (obj.attributes.XFlip) 7 - pixelX else pixelX];
+                const palette = if (obj.attributes.DMGPalette) self.op1 else self.op0;
+                const colorValue = palette.get(color);
+
+                // On objects the last two bits are transparent
+                if (colorValue == Color.White) continue;
+
+                const framebufferIndex = xu8 + @as(usize, @intCast((self.scanline.*))) * 160;
+                self.framebuffer[framebufferIndex] = OBJPaletteColors[@intFromEnum(colorValue)];
+            }
+        }
     }
 
     fn setLYCEqualsLY(self: *PPU) void {
