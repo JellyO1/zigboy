@@ -71,7 +71,7 @@ pub const GameBoyState = struct {
         } else cpu.Registers.init(), mmui, null, null, null);
 
         const ppui = try allocator.create(PPU);
-        ppui.* = PPU.init(mmui);
+        ppui.* = PPU.init(mmui, allocator);
 
         const timer = try allocator.create(Timer);
         timer.* = Timer.init(mmui);
@@ -85,6 +85,8 @@ pub const GameBoyState = struct {
     }
 
     pub fn deinit(self: *GameBoyState) void {
+        self.ppu.deinit();
+
         allocator.destroy(self.timer);
         allocator.destroy(self.ppu);
         allocator.destroy(self.cpu);
