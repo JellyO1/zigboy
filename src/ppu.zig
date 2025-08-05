@@ -281,8 +281,25 @@ pub const PPU = struct {
             }
         }
 
+        // Sort objects by priority.
+        std.mem.sort(Object, self.objects.items, {}, compareObjects);
+
         // std.log.info("{}", .{self.objects});
         // std.debug.panic("", .{});
+    }
+
+    /// The smaller the X coordinate, the higher the priority. When X coordinates are
+    /// identical, the object located first in OAM has higher priority.
+    fn compareObjects(context: void, a: Object, b: Object) bool {
+        _ = context;
+
+        // Sort by X coordinate (smaller X = higher priority)
+        if (a.posX != b.posX) {
+            return a.posX < b.posX;
+        }
+
+        // Keep the original order for equal X coordinates.
+        return false;
     }
 
     fn renderScanline(self: *PPU) void {
@@ -385,7 +402,9 @@ pub const PPU = struct {
         const xu8: u8 = @intCast(x);
 
         if (self.lcdc.ObjEnable) {
-            for (self.objects.items) |obj| {
+            // Draw back to front to preserve priority
+            var it = std.mem.reverseIterator(self.objects.items);
+            while (it.next()) |obj| {
                 // If this is 8x8 and we've already drawn everything go to the next obj
                 if (!self.lcdc.ObjSize and self.scanline.* >= obj.posY - 8) continue;
 
@@ -393,20 +412,22 @@ pub const PPU = struct {
                 // std.log.info("ly: {}, lx: {}, {}", .{ self.scanline.*, xu8, obj });
 
                 // posX is hardware offset by +8 so the screenX is actually posX - 8
-                const pixelX: u8 = @intCast((x - (obj.posX - 8)) % 8);
-                const pixelY: u8 = self.scanline.* % 8;
+                var pixelX: u8 = @intCast((x - (obj.posX - 8)) % 8);
+                var pixelY: u8 = self.scanline.* % 8;
 
-                var tileIndex: u8 = undefined;
+                var tileIndex: u8 = obj.tileIndex;
 
+                // Is it an 8x16 object?
                 if (self.lcdc.ObjSize) {
-                    if ((self.scanline.* + 8) -| obj.posY > 8) {
-                        tileIndex = obj.tileIndex | 0x01;
-                    } else {
-                        tileIndex = obj.tileIndex & 0xFE;
-                    }
-                } else tileIndex = obj.tileIndex;
+                    tileIndex = self.getSpriteTileIndex(obj);
+                } else {
+                    // Flip pixels if necessary
+                    pixelY = if (obj.attributes.YFlip) 7 - pixelY else pixelY;
+                    pixelX = if (obj.attributes.XFlip) 7 - pixelX else pixelX;
+                }
+
                 const tile = self.mmu.tileset[tileIndex];
-                const color = tile.data[if (obj.attributes.YFlip) 7 - pixelY else pixelY][if (obj.attributes.XFlip) 7 - pixelX else pixelX];
+                const color = tile.data[pixelY][pixelX];
                 const palette = if (obj.attributes.DMGPalette) self.op1 else self.op0;
                 const colorValue = palette.get(color);
 
@@ -414,7 +435,14 @@ pub const PPU = struct {
                 if (colorValue == Color.White) continue;
 
                 const framebufferIndex = xu8 + @as(usize, @intCast((self.scanline.*))) * 160;
-                self.framebuffer[framebufferIndex] = OBJPaletteColors[@intFromEnum(colorValue)];
+
+                const bgColor = self.framebuffer[framebufferIndex];
+
+                // Handle sprite priority: if Priority=1, sprite only draws over white
+                // if Priority=0, sprite always draws over background
+                if (!obj.attributes.Priority or bgColor == BGPaletteColors[@intFromEnum(Color.White)]) {
+                    self.framebuffer[framebufferIndex] = OBJPaletteColors[@intFromEnum(colorValue)];
+                }
             }
         }
     }
@@ -424,6 +452,17 @@ pub const PPU = struct {
         if (self.stat.LYCEqualsLY and self.stat.LYC) {
             self.IF.LCD = true;
         }
+    }
+
+    /// Returns the correct tile index for 8x16 sprites based on Y-flip and scanline position
+    fn getSpriteTileIndex(self: *PPU, obj: Object) u8 {
+        const isInUpperHalf = self.scanline.* < obj.posY - 8;
+        const flipTiles = if (obj.attributes.YFlip) isInUpperHalf else !isInUpperHalf;
+
+        return if (flipTiles)
+            obj.tileIndex | 0x01
+        else
+            obj.tileIndex & 0xFE;
     }
 
     pub fn debugTileset(state: *PPU, buffer: *[128 * 192]RGBA) void {
