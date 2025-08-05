@@ -156,6 +156,7 @@ pub const CPU = struct {
     ei_delay: bool,
     /// Halt
     halt: bool,
+    dma_cycles: u32,
 
     pub fn init(registers: ?Registers, mmu: *mmuz.MMU, ime: ?bool, ei_delay: ?bool, halt: ?bool) CPU {
         return .{
@@ -164,6 +165,7 @@ pub const CPU = struct {
             .ime = ime orelse false,
             .ei_delay = ei_delay orelse false,
             .halt = halt orelse false,
+            .dma_cycles = 0,
         };
     }
 
@@ -184,6 +186,10 @@ pub const CPU = struct {
         cycles += self.execute(op);
 
         cycles += self.checkInterrups();
+
+        if (self.mmu.needs_dma) {
+            self.DMA(cycles);
+        }
 
         return cycles;
     }
@@ -763,6 +769,31 @@ pub const CPU = struct {
         }
 
         return cycles;
+    }
+
+    fn DMA(self: *CPU, cycles: u32) void {
+        // Transfer it all at once in the beginning
+        if (self.dma_cycles == 0) {
+            const val = self.mmu.read(mmuz.MMU.DMA_ADDR);
+            const start: u16 = @as(u16, @intCast(val)) << 8;
+
+            for (0..0xA0) |uindex| {
+                const index: u16 = @intCast(uindex);
+
+                const from = start + index;
+                const to = 0xFE00 + index;
+
+                self.mmu.write(to, self.mmu.read(from));
+            }
+        }
+
+        self.dma_cycles += cycles;
+
+        // After 160 M-cycles the process should be completed so mark it as such
+        if (self.dma_cycles >= 160) {
+            self.dma_cycles = 0;
+            self.mmu.needs_dma = false;
+        }
     }
 
     fn handleInterrupt(self: *CPU, addr: u16) u32 {

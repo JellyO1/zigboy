@@ -74,6 +74,7 @@ pub const MMU = struct {
     pub const BG_SCROLL_X_ADDR = 0xFF43;
     pub const LY_ADDR = 0xFF44;
     pub const LYC_ADDR = 0xFF45;
+    pub const DMA_ADDR = 0xFF46;
     pub const BG_PALETTE_ADDR = 0xFF47;
     pub const OBJ_0_PALETTE_ADDR = 0xFF48;
     pub const OBJ_1_PALETTE_ADDR = 0xFF49;
@@ -114,6 +115,7 @@ pub const MMU = struct {
     ie_register: InterruptFlags,
     // Tile cache
     tileset: [384]Tile,
+    needs_dma: bool,
 
     // Memory Bank Controller
     // mbc: ?MBC = null,
@@ -145,6 +147,7 @@ pub const MMU = struct {
             .hram = std.mem.zeroes([0x7F]u8),
             .ie_register = InterruptFlags.init(null),
             .tileset = std.mem.zeroes([384]Tile),
+            .needs_dma = false,
         };
     }
 
@@ -164,7 +167,7 @@ pub const MMU = struct {
             0xC000...0xDFFF => self.work_ram[addr - 0xC000],
             0xE000...0xFDFF => self.echo_ram[addr - 0xE000],
             0xFE00...0xFE9F => self.oam[addr - 0xFE00],
-            0xFEA0...0xFEFF => 0xFF, // Not Usable
+            0xFEA0...0xFEFF => 0x00, // Not Usable
             // 0xFE00...0xFEFF => self.oam[addr - 0xFE00],
             0xFF00 => self.joypad.read(),
             0xFF01...0xFF7F => self.io_registers[addr - 0xFF01],
@@ -189,7 +192,7 @@ pub const MMU = struct {
             0xC000...0xDFFF => &self.work_ram[addr - 0xC000],
             0xE000...0xFDFF => &self.echo_ram[addr - 0xE000],
             0xFE00...0xFE9F => &self.oam[addr - 0xFE00],
-            0xFEA0...0xFEFF => @constCast(&@as(u8, 0xFF)), // Not Usable
+            0xFEA0...0xFEFF => @constCast(&@as(u8, 0x00)), // Not Usable
             // 0xFE00...0xFEFF => &self.oam[addr - 0xFE00],
             0xFF00 => @ptrCast(&self.joypad),
             0xFF01...0xFF7F => &self.io_registers[addr - 0xFF01],
@@ -282,6 +285,10 @@ pub const MMU = struct {
                 }
 
                 self.io_registers[normalized_addr] = value;
+
+                if (addr == DMA_ADDR) {
+                    self.needs_dma = true;
+                }
 
                 // Check if bit 7 (transfer enable) of SC (Serial Transfer Control) is set
                 if (self.io_registers[SC_ADDR - start_addr] == 0x81) {
