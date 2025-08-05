@@ -25,8 +25,6 @@ const Timer = @import("timer.zig").Timer;
 const tracy = @import("tracy");
 
 pub const GameBoyState = struct {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
-    const allocator = gpa.allocator();
     /// Picture Processing Unit
     ppu: *PPU,
     /// Central Processing Unit
@@ -37,7 +35,9 @@ pub const GameBoyState = struct {
     /// Total cycles elapsed
     cycles: u64,
 
-    pub fn init(boot_rom_path: ?[]const u8, game_rom_path: []const u8) !GameBoyState {
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, boot_rom_path: ?[]const u8, game_rom_path: []const u8) !GameBoyState {
         var boot_rom_slice: ?[0x100]u8 = null;
 
         std.log.info("{?s}\n{s}\n", .{ boot_rom_path, game_rom_path });
@@ -81,24 +81,20 @@ pub const GameBoyState = struct {
             .ppu = ppui,
             .timer = timer,
             .cycles = 0,
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *GameBoyState) void {
         self.ppu.deinit();
 
-        allocator.destroy(self.timer);
-        allocator.destroy(self.ppu);
-        allocator.destroy(self.cpu);
-        allocator.destroy(self.mmu);
-        const check = gpa.deinit();
-
-        if (check == std.heap.Check.leak) {
-            std.debug.panic("Mem leak", .{});
-        }
+        self.allocator.destroy(self.timer);
+        self.allocator.destroy(self.ppu);
+        self.allocator.destroy(self.cpu);
+        self.allocator.destroy(self.mmu);
     }
 
-    pub fn initTest(registers: cpu.Registers, ime: bool, ei_delay: bool) !GameBoyState {
+    pub fn initTest(allocator: std.mem.Allocator, registers: cpu.Registers, ime: bool, ei_delay: bool) !GameBoyState {
         const mmui = try allocator.create(MMU);
         mmui.* = MMU.init(null, null);
 
@@ -106,7 +102,7 @@ pub const GameBoyState = struct {
         cpui.* = CPU.init(registers, mmui, ime, ei_delay, null);
 
         const ppui = try allocator.create(PPU);
-        ppui.* = PPU.init(mmui);
+        ppui.* = PPU.init(mmui, allocator);
 
         const timer = try allocator.create(Timer);
         timer.* = Timer.init(mmui);
@@ -116,6 +112,7 @@ pub const GameBoyState = struct {
             .ppu = ppui,
             .timer = timer,
             .cycles = 0,
+            .allocator = allocator,
         };
     }
 
@@ -186,7 +183,7 @@ pub fn main() !void {
     });
     defer res.deinit();
 
-    var gameBoyState: GameBoyState = try GameBoyState.init(res.args.boot, res.positionals[0][0]);
+    var gameBoyState: GameBoyState = try GameBoyState.init(gpa.allocator(), res.args.boot, res.positionals[0][0]);
     defer gameBoyState.deinit();
 
     {
