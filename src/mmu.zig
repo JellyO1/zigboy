@@ -256,7 +256,7 @@ pub const MMU = struct {
                     const bitIndex: u8 = 1 << (7 - tileX);
                     const lowBit: u8 = lowByte & bitIndex;
                     const highBit: u8 = highByte & bitIndex;
-                    const color = if (highBit == 0) @as(u2, 0b00) else @as(u2, 0b10) | if (lowBit == 0) @as(u2, 0b00) else @as(u2, 0b01);
+                    const color = (if (highBit == 0) @as(u2, 0b00) else @as(u2, 0b10)) | (if (lowBit == 0) @as(u2, 0b00) else @as(u2, 0b01));
                     // const color: u2 = @as(u2, @truncate(highBit)) << 1 | @as(u2, @truncate(lowBit));
                     self.tileset[tileIndex].data[tileY][tileX] = color;
                 }
