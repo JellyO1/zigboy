@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Add a build option for tracy
-    const enable_tracy = b.option(bool, "enable_tracy", "Enable Tracy profiler integration") orelse if (optimize == .Debug) true else false;
+    const enable_tracy = b.option(bool, "enable_tracy", "Enable Tracy profiler integration") orelse false;
 
     // Only add tracy if enabled
     const tracy_dep = b.dependency("tracy", .{
