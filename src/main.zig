@@ -127,17 +127,26 @@ pub const GameBoyState = struct {
     }
 
     pub fn keyPress(self: *GameBoyState, key: c.SDL_Keycode, down: bool) void {
-        const joypad: *mmu.Joypad = @ptrCast(self.mmu.readPtr(0xFF00));
+        const joypad: *mmu.Joypad = @ptrCast(self.mmu.readPtr(mmu.MMU.JOYP_ADDR));
 
         switch (key) {
-            // A, RIGHT
-            c.SDLK_Z, c.SDLK_RIGHT => joypad.*.ARight = !down,
-            // B, LEFT
-            c.SDLK_X, c.SDLK_LEFT => joypad.*.BLeft = !down,
-            // START, DOWN
-            c.SDLK_RETURN, c.SDLK_DOWN => joypad.*.StartDown = !down,
-            // SELECT, UP
-            c.SDLK_BACKSPACE, c.SDLK_UP => joypad.*.SelectUp = !down,
+            // A
+            c.SDLK_Z => joypad.*.A = down,
+            // RIGHT
+            c.SDLK_RIGHT => joypad.*.Right = down,
+            // B
+            c.SDLK_X => joypad.*.B = down,
+            //LEFT
+            c.SDLK_LEFT => joypad.*.Left = down,
+            // START
+            c.SDLK_RETURN => joypad.*.Start = down,
+            // DOWN
+            c.SDLK_DOWN => joypad.*.Down = down,
+            // SELECT
+            c.SDLK_BACKSPACE => joypad.*.Start = down,
+            // UP
+            c.SDLK_UP => joypad.*.Up = down,
+            // or (joypad.DisableButtons and joypad.DisableDpad),
             else => {
                 // Don't fire any interrupt
                 return;
@@ -145,7 +154,7 @@ pub const GameBoyState = struct {
         }
 
         // Request Joypad interrupt
-        if (!joypad.DisableButtons or !joypad.DisableDpad) {
+        if ((!joypad.EnableButtons or !joypad.EnableDpad) and down) {
             const IF: *mmu.InterruptFlags = @ptrCast(self.mmu.readPtr(0xFF0F));
             IF.Joypad = true;
         }

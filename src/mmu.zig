@@ -26,26 +26,38 @@ pub const InterruptFlags = packed struct(u8) {
     }
 };
 
-pub const Joypad = packed struct(u8) {
-    ARight: bool = true,
-    BLeft: bool = true,
-    SelectUp: bool = true,
-    StartDown: bool = true,
-    DisableDpad: bool = true,
-    DisableButtons: bool = true,
-    _: u2 = 0,
+pub const Joypad = struct {
+    A: bool = false,
+    B: bool = false,
+    Select: bool = false,
+    Start: bool = false,
+    Right: bool = false,
+    Left: bool = false,
+    Up: bool = false,
+    Down: bool = false,
+    EnableDpad: bool = false,
+    EnableButtons: bool = false,
+
+    inline fn toU8(b: bool) u8 {
+        return @as(u8, @as(u1, @bitCast(b)));
+    }
 
     pub fn read(self: *Joypad) u8 {
-        if (self.DisableButtons and self.DisableDpad) {
-            return @as(u8, @bitCast(self.*)) | 0x0F;
+        if (!self.EnableButtons and !self.EnableDpad) return 0xFF;
+
+        var ret: u8 = 0x00;
+        if (self.EnableButtons) {
+            ret = @as(u8, (toU8(self.A) << 0 | toU8(self.B) << 1 | toU8(self.Select) << 2 | toU8(self.Start) << 3 | toU8(self.EnableDpad) << 4 | toU8(self.EnableButtons) << 5));
+        } else if (self.EnableDpad) {
+            ret = @as(u8, (toU8(self.Right) << 0 | toU8(self.Left) << 1 | toU8(self.Up) << 2 | toU8(self.Down) << 3 | toU8(self.EnableDpad) << 4 | toU8(self.EnableButtons) << 5));
         }
 
-        return @as(u8, @bitCast(self.*));
+        return ~ret;
     }
 
     pub fn write(self: *Joypad, value: u8) void {
-        self.DisableDpad = (value & 0x10) != 0;
-        self.DisableButtons = (value & 0x20) != 0;
+        self.EnableDpad = (value & 0x10) == 0;
+        self.EnableButtons = (value & 0x20) == 0;
     }
 };
 
@@ -61,6 +73,7 @@ pub const MMU = struct {
     pub const INT_SERIAL_ADDR = 0x58;
     pub const INT_JOYPAD_ADDR = 0x60;
 
+    pub const JOYP_ADDR = 0xFF00;
     pub const SB_ADDR = 0xFF01;
     pub const SC_ADDR = 0xFF02;
     pub const DIV_ADDR = 0xFF04;
@@ -134,15 +147,7 @@ pub const MMU = struct {
             .work_ram = std.mem.zeroes([0x2000]u8),
             .echo_ram = std.mem.zeroes([0x2000]u8),
             .oam = std.mem.zeroes([0xA0]u8),
-            // .oam = std.mem.zeroes([0x100]u8),
-            .joypad = Joypad{
-                .ARight = true,
-                .BLeft = true,
-                .SelectUp = true,
-                .StartDown = true,
-                .DisableButtons = true,
-                .DisableDpad = true,
-            },
+            .joypad = Joypad{},
             .io_registers = std.mem.zeroes([0x7F]u8),
             .hram = std.mem.zeroes([0x7F]u8),
             .ie_register = InterruptFlags.init(null),
