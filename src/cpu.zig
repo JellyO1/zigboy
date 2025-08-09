@@ -170,10 +170,10 @@ pub const CPU = struct {
     }
 
     pub fn step(self: *CPU) u32 {
-        var cycles: u32 = 0;
+        var ticks: u32 = 0;
         if (self.halt) {
-            cycles += self.checkInterrups();
-            return cycles;
+            ticks += self.checkInterrups();
+            return if (ticks == 0) 1 else ticks;
         }
 
         // If EI delay is set, set IME and clear EI delay
@@ -183,15 +183,15 @@ pub const CPU = struct {
         }
 
         const op = self.fetch();
-        cycles += self.execute(op);
+        ticks += self.execute(op);
 
-        cycles += self.checkInterrups();
+        ticks += self.checkInterrups();
 
         if (self.mmu.needs_dma) {
-            self.DMA(cycles);
+            self.DMA(ticks);
         }
 
-        return cycles;
+        return ticks;
     }
 
     fn fetch(self: *CPU) u8 {
@@ -728,7 +728,7 @@ pub const CPU = struct {
     }
 
     fn checkInterrups(self: *CPU) u32 {
-        var cycles: u32 = 1;
+        var ticks: u32 = 0;
         const pending: u8 = self.mmu.read(mmuz.MMU.IE_ADDR) & self.mmu.read(mmuz.MMU.IF_ADDR) & 0x1F;
         if (pending != 0) {
             // Interrupt halt if there's an interrupt pending
@@ -743,32 +743,32 @@ pub const CPU = struct {
                 if (IF.VBlank and self.mmu.ie_register.VBlank) {
                     self.ime = false;
                     IF.VBlank = false;
-                    cycles += self.handleInterrupt(mmuz.MMU.INT_VBLANK_ADDR);
+                    ticks += self.handleInterrupt(mmuz.MMU.INT_VBLANK_ADDR);
                 } else if (IF.Timer and self.mmu.ie_register.Timer) {
                     self.ime = false;
                     IF.Timer = false;
 
-                    cycles += self.handleInterrupt(mmuz.MMU.INT_TIMER_ADDR);
+                    ticks += self.handleInterrupt(mmuz.MMU.INT_TIMER_ADDR);
                 } else if (IF.Serial and self.mmu.ie_register.Serial) {
                     self.ime = false;
                     IF.Serial = false;
 
-                    cycles += self.handleInterrupt(mmuz.MMU.INT_SERIAL_ADDR);
+                    ticks += self.handleInterrupt(mmuz.MMU.INT_SERIAL_ADDR);
                 } else if (IF.LCD and self.mmu.ie_register.LCD) {
                     self.ime = false;
                     IF.LCD = false;
 
-                    cycles += self.handleInterrupt(mmuz.MMU.INT_LCD_ADDR);
+                    ticks += self.handleInterrupt(mmuz.MMU.INT_LCD_ADDR);
                 } else if (IF.Joypad and self.mmu.ie_register.Joypad) {
                     self.ime = false;
                     IF.Joypad = false;
 
-                    cycles += self.handleInterrupt(mmuz.MMU.INT_JOYPAD_ADDR);
+                    ticks += self.handleInterrupt(mmuz.MMU.INT_JOYPAD_ADDR);
                 }
             }
         }
 
-        return cycles;
+        return ticks;
     }
 
     fn DMA(self: *CPU, cycles: u32) void {
