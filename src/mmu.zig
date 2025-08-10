@@ -1,5 +1,6 @@
 const std = @import("std");
 const ppuz = @import("ppu.zig");
+const mbcz = @import("mbc.zig");
 
 // Interrupt Flags
 pub const InterruptFlags = packed struct(u8) {
@@ -102,10 +103,7 @@ pub const MMU = struct {
     boot_rom: [0x100]u8,
     // Boot ROM enabled
     boot_rom_enabled: bool,
-    // ROM bank 0 (16KB)
-    rom_bank0: [0x4000]u8,
-    // ROM bank 1-N (16KB), used for bank switching
-    rom_bank_n: [0x4000]u8,
+
     // Video RAM (8KB)
     vram: [0x2000]u8,
     // External RAM (8KB)
@@ -131,17 +129,12 @@ pub const MMU = struct {
     needs_dma: bool,
 
     // Memory Bank Controller
-    // mbc: ?MBC = null,
+    mbc: *mbcz.MBC,
 
-    pub fn init(boot_rom: ?[0x100]u8, game_rom: ?[]u8) MMU {
-        const rom_bank0 = if (game_rom) |rom| rom[0x0000..0x4000].* else std.mem.zeroes([0x4000]u8);
-        const rom_bank_n = if (game_rom) |rom| rom[0x4000..0x8000].* else std.mem.zeroes([0x4000]u8);
-
+    pub fn init(boot_rom: ?[0x100]u8, mbc: *mbcz.MBC) MMU {
         return .{
             .boot_rom = boot_rom orelse std.mem.zeroes([0x100]u8),
             .boot_rom_enabled = if (boot_rom == null) false else true,
-            .rom_bank0 = rom_bank0,
-            .rom_bank_n = rom_bank_n,
             .vram = std.mem.zeroes([0x2000]u8),
             .external_ram = std.mem.zeroes([0x2000]u8),
             .work_ram = std.mem.zeroes([0x2000]u8),
@@ -153,20 +146,19 @@ pub const MMU = struct {
             .ie_register = InterruptFlags.init(null),
             .tileset = std.mem.zeroes([384]Tile),
             .needs_dma = false,
+            .mbc = mbc,
         };
     }
 
     pub fn read(self: *MMU, addr: u16) u8 {
         return switch (addr) {
-            0x0000...0x3FFF => {
+            0x0000...0x7FFF => {
                 if (self.boot_rom_enabled and addr < 0x0100) {
                     return self.boot_rom[addr]; // Boot ROM
                 }
 
-                // TODO: Handle with MBC
-                return self.rom_bank0[addr]; // ROM Bank 0
+                return self.mbc.read(addr);
             },
-            0x4000...0x7FFF => self.rom_bank_n[addr - 0x4000],
             0x8000...0x9FFF => self.vram[addr - 0x8000],
             0xA000...0xBFFF => self.external_ram[addr - 0xA000],
             0xC000...0xDFFF => self.work_ram[addr - 0xC000],
@@ -184,14 +176,13 @@ pub const MMU = struct {
 
     pub fn readPtr(self: *MMU, addr: u16) *u8 {
         return switch (addr) {
-            0x0000...0x3FFF => {
+            0x0000...0x7FFF => {
                 if (self.boot_rom_enabled and addr < 0x0100) {
                     return &self.boot_rom[addr]; // Boot ROM
                 }
 
-                return &self.rom_bank0[addr]; // ROM Bank 0
+                @panic("not implemented");
             },
-            0x4000...0x7FFF => &self.rom_bank_n[addr - 0x4000],
             0x8000...0x9FFF => &self.vram[addr - 0x8000],
             0xA000...0xBFFF => &self.external_ram[addr - 0xA000],
             0xC000...0xDFFF => &self.work_ram[addr - 0xC000],
@@ -231,8 +222,7 @@ pub const MMU = struct {
 
     pub fn write(self: *MMU, addr: u16, value: u8) void {
         switch (addr) {
-            0x0000...0x3FFF => self.rom_bank0[addr] = value,
-            0x4000...0x7FFF => self.rom_bank_n[addr - 0x4000] = value,
+            0x0000...0x7FFF => self.mbc.write(addr, value),
             0x8000...0x9FFF => {
                 self.vram[addr - 0x8000] = value;
 
@@ -315,7 +305,6 @@ pub const MMU = struct {
             },
             0xFF80...0xFFFE => self.hram[addr - 0xFF80] = value,
             0xFFFF => self.ie_register = @as(InterruptFlags, @bitCast(value)),
-            // else => {},
         }
     }
 };

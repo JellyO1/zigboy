@@ -22,6 +22,7 @@ const PPU = ppu.PPU;
 const mmu = @import("mmu.zig");
 const MMU = mmu.MMU;
 const Timer = @import("timer.zig").Timer;
+const MBC = @import("mbc.zig").MBC;
 const tracy = @import("tracy");
 
 pub const GameBoyState = struct {
@@ -32,6 +33,8 @@ pub const GameBoyState = struct {
     /// Memory management unit
     mmu: *MMU,
     timer: *Timer,
+    /// Memory Bank Controller
+    mbc: *MBC,
     /// Total cycles elapsed
     cycles: u64,
 
@@ -40,7 +43,6 @@ pub const GameBoyState = struct {
     pub fn init(allocator: std.mem.Allocator, boot_rom_path: ?[]const u8, game_rom_path: []const u8) !GameBoyState {
         var boot_rom_slice: ?[0x100]u8 = null;
 
-        std.log.info("{?s}\n{s}\n", .{ boot_rom_path, game_rom_path });
         // Load bootrom to memory
         if (boot_rom_path != null) {
             const boot_rom = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, boot_rom_path.?, 256);
@@ -48,14 +50,14 @@ pub const GameBoyState = struct {
             boot_rom_slice = boot_rom[0..0x100].*;
         }
 
-        const game_rom = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, game_rom_path, 1024 * 1024);
-        defer std.heap.page_allocator.free(game_rom);
+        const mbc = try allocator.create(MBC);
+        mbc.* = try MBC.init(allocator, game_rom_path);
 
         const mmui = try allocator.create(MMU);
-        mmui.* = MMU.init(boot_rom_slice, game_rom);
+        mmui.* = MMU.init(boot_rom_slice, mbc);
 
         const cpui = try allocator.create(CPU);
-        cpui.* = CPU.init(if (boot_rom_path == null) cpu.Registers{
+        cpui.* = try CPU.init(allocator, if (boot_rom_path == null) cpu.Registers{
             .A = 0x11,
             .B = 0x00,
             .C = 0x00,
@@ -68,18 +70,20 @@ pub const GameBoyState = struct {
             }),
             .PC = 0x100,
             .SP = 0xFFFE,
-        } else cpu.Registers.init(), mmui, null, null, null);
+        } else cpu.Registers.init(), mmui, null, null, null, logToFile);
 
         const ppui = try allocator.create(PPU);
         ppui.* = PPU.init(mmui, allocator);
 
         const timer = try allocator.create(Timer);
         timer.* = Timer.init(mmui);
+
         return .{
             .cpu = cpui,
             .mmu = mmui,
             .ppu = ppui,
             .timer = timer,
+            .mbc = mbc,
             .cycles = 0,
             .allocator = allocator,
         };
@@ -87,11 +91,14 @@ pub const GameBoyState = struct {
 
     pub fn deinit(self: *GameBoyState) void {
         self.ppu.deinit();
+        self.cpu.deinit();
+        self.mbc.deinit();
 
         self.allocator.destroy(self.timer);
         self.allocator.destroy(self.ppu);
         self.allocator.destroy(self.cpu);
         self.allocator.destroy(self.mmu);
+        self.allocator.destroy(self.mbc);
     }
 
     pub fn initTest(allocator: std.mem.Allocator, registers: cpu.Registers, ime: bool, ei_delay: bool) !GameBoyState {
@@ -99,7 +106,7 @@ pub const GameBoyState = struct {
         mmui.* = MMU.init(null, null);
 
         const cpui = try allocator.create(CPU);
-        cpui.* = CPU.init(registers, mmui, ime, ei_delay, null);
+        cpui.* = try CPU.init(registers, mmui, ime, ei_delay, null);
 
         const ppui = try allocator.create(PPU);
         ppui.* = PPU.init(mmui, allocator);
