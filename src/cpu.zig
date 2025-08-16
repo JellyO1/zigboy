@@ -35,6 +35,23 @@ pub const Flags = packed struct(u8) {
             .Z = if (flags) |f| f.Z else false,
         };
     }
+
+    pub fn format(
+        self: *Flags,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+
+        try writer.print("C: {}, H: {}, N: {}, Z: {}", .{
+            @intFromBool(self.C),
+            @intFromBool(self.H),
+            @intFromBool(self.N),
+            @intFromBool(self.Z),
+        });
+    }
 };
 
 pub const Registers = struct {
@@ -143,6 +160,26 @@ pub const Registers = struct {
             },
         }
     }
+
+    pub fn format(
+        self: *Registers,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+
+        try writer.print("AF: {X:04}, BC: {X:04}, DE: {X:04}, HL: {X:04}, SP: {X:04} PC: {X:04}, Flags: {}", .{
+            self.getWord(Word.AF),
+            self.getWord(Word.BC),
+            self.getWord(Word.DE),
+            self.getWord(Word.HL),
+            self.SP,
+            self.PC,
+            self.F,
+        });
+    }
 };
 
 pub const CPU = struct {
@@ -158,7 +195,16 @@ pub const CPU = struct {
     halt: bool,
     dma_cycles: u32,
 
-    pub fn init(registers: ?Registers, mmu: *mmuz.MMU, ime: ?bool, ei_delay: ?bool, halt: ?bool) CPU {
+    // If we should log the opcodes to a file
+    logExecutionToFile: bool,
+    debugFile: std.fs.File,
+
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, registers: ?Registers, mmu: *mmuz.MMU, ime: ?bool, ei_delay: ?bool, halt: ?bool, logToFile: ?bool) !CPU {
+        const debugFile = try std.fs.cwd().createFile("debug.log", std.fs.File.CreateFlags{ .read = true });
+        errdefer debugFile.close();
+
         return .{
             .registers = registers orelse Registers.init(),
             .mmu = mmu,
@@ -166,7 +212,14 @@ pub const CPU = struct {
             .ei_delay = ei_delay orelse false,
             .halt = halt orelse false,
             .dma_cycles = 0,
+            .debugFile = debugFile,
+            .allocator = allocator,
+            .logExecutionToFile = logToFile orelse false,
         };
+    }
+
+    pub fn deinit(self: *CPU) void {
+        self.debugFile.close();
     }
 
     pub fn step(self: *CPU) u32 {
@@ -184,6 +237,16 @@ pub const CPU = struct {
 
         const op = self.fetch();
         ticks += self.execute(op);
+
+        self.log(
+            " ;{}; {s}, LY: {X:02}, TIMA: {X:02}\n",
+            .{
+                ticks / MCycle,
+                @constCast(&self.registers),
+                self.mmu.read(mmuz.MMU.LY_ADDR),
+                self.mmu.read(mmuz.MMU.TIMA_ADDR),
+            },
+        );
 
         ticks += self.checkInterrups();
 
@@ -208,7 +271,7 @@ pub const CPU = struct {
 
     fn execute(self: *CPU, opcode: u8) u32 {
         return switch (opcode) {
-            0x00 => noop(),
+            0x00 => self.noop(),
             0x01 => ld_r16_n16(self, Registers.Word.BC, &fetch16(self)),
             0x02 => ld_vr16_a(self, Registers.Word.BC),
             0x03 => inc_r16(self, Registers.Word.BC),
@@ -816,8 +879,17 @@ pub const CPU = struct {
         return 5;
     }
 
+    fn log(self: *CPU, comptime fmt: []const u8, args: anytype) void {
+        if (!self.logExecutionToFile) return;
+        if (std.fmt.allocPrint(self.allocator, fmt, args)) |debug| {
+            defer self.allocator.free(debug);
+            self.debugFile.writeAll(debug) catch {};
+        } else |_| {}
+    }
+
     /// No operation
-    fn noop() u32 {
+    fn noop(self: *CPU) u32 {
+        self.log("NOP", .{});
         return MCycle;
     }
 
@@ -835,6 +907,8 @@ pub const CPU = struct {
         self.registers.F.Z = r2 == 0;
         self.registers.F.N = false;
         self.registers.F.C = ov1 == 1 or ov2 == 1;
+
+        self.log("ADC A {s}:{X:02}", .{ @tagName(r8), vr8 });
 
         return MCycle;
     }
@@ -854,10 +928,14 @@ pub const CPU = struct {
         self.registers.F.N = false;
         self.registers.F.C = ov1 == 1 or ov2 == 1;
 
+        self.log("ADC A [HL]:{X:02}", .{vhl});
+
         return MCycle * 2;
     }
 
     fn adc_a_n8(self: *CPU, n8: *const u8) u32 {
+        self.log("ADC A {X:02}", .{n8.*});
+
         const r1, const ov1 = @addWithOverflow(self.registers.A, n8.*);
         const r2, const ov2 = @addWithOverflow(r1, @as(u8, @as(u1, @bitCast(self.registers.F.C))));
 
@@ -886,6 +964,8 @@ pub const CPU = struct {
         self.registers.F.N = false;
         self.registers.F.C = overflow == 1;
 
+        self.log("ADD A {s}:{X:02}", .{ @tagName(r8), vr8 });
+
         return MCycle;
     }
 
@@ -902,6 +982,8 @@ pub const CPU = struct {
         self.registers.F.N = false;
         self.registers.F.C = overflow == 1;
 
+        self.log("ADD A [HL]:{X:02}", .{vhl});
+
         return MCycle * 2;
     }
 
@@ -917,6 +999,8 @@ pub const CPU = struct {
         self.registers.F.N = false;
         self.registers.F.C = overflow == 1;
 
+        self.log("ADD A {X:02}", .{n8.*});
+
         return MCycle * 2;
     }
 
@@ -930,10 +1014,14 @@ pub const CPU = struct {
         self.registers.F.H = ((hl & 0x7FF) + (vr16 & 0x7FF)) > 0x7FF;
         self.registers.F.C = overflow == 1;
 
+        self.log("ADD HL {s}:{X:4}", .{ @tagName(r16), vr16 });
+
         return MCycle * 2;
     }
 
     fn add_hl_sp(self: *CPU) u32 {
+        self.log("ADD HL SP:{X:4}", .{self.registers.SP});
+
         const hl = self.registers.getWord(Registers.Word.HL);
         const result, const overflow = @addWithOverflow(hl, self.registers.SP);
         self.registers.setWord(Registers.Word.HL, result);
@@ -958,6 +1046,8 @@ pub const CPU = struct {
         self.registers.F.Z = false;
         self.registers.F.N = false;
 
+        self.log("ADD SP {}", .{e8.*});
+
         return MCycle * 4;
     }
 
@@ -968,6 +1058,9 @@ pub const CPU = struct {
         self.registers.F.N = false;
         self.registers.F.H = true;
         self.registers.F.C = false;
+
+        self.log("AND A {s}:{X:02}", .{ @tagName(r8), val });
+
         return MCycle;
     }
 
@@ -978,6 +1071,9 @@ pub const CPU = struct {
         self.registers.F.N = false;
         self.registers.F.H = true;
         self.registers.F.C = false;
+
+        self.log("AND A [HL]:{X:02}", .{val});
+
         return MCycle * 2;
     }
 
@@ -988,6 +1084,9 @@ pub const CPU = struct {
         self.registers.F.N = false;
         self.registers.F.H = true;
         self.registers.F.C = false;
+
+        self.log("AND A {X:02}", .{val});
+
         return MCycle * 2;
     }
 
@@ -1025,10 +1124,14 @@ pub const CPU = struct {
         // jump to the new address
         self.registers.PC = n16.*;
 
+        self.log("CALL {X:4}", .{n16.*});
+
         return MCycle * 6;
     }
 
     fn call_cc_n16(self: *CPU, n16: *const u16, cc: ConditionCode) u32 {
+        self.log("CALL {s} {X:4}", .{ @tagName(cc), n16.* });
+
         switch (cc) {
             .Z => {
                 if (self.registers.F.Z) {
@@ -1056,6 +1159,8 @@ pub const CPU = struct {
     }
 
     fn ccf(self: *CPU) u32 {
+        self.log("CCF", .{});
+
         self.registers.F.C = !self.registers.F.C;
         self.registers.F.N = false;
         self.registers.F.H = false;
@@ -1070,6 +1175,8 @@ pub const CPU = struct {
         self.registers.F.N = true;
         self.registers.F.H = (self.registers.A & 0xF) < (val & 0xF);
         self.registers.F.C = self.registers.A < val;
+
+        self.log("CP A {s}:{X:02}", .{ @tagName(r8), val });
         return MCycle;
     }
 
@@ -1081,6 +1188,8 @@ pub const CPU = struct {
         self.registers.F.N = true;
         self.registers.F.H = (self.registers.A & 0xF) < (val & 0xF);
         self.registers.F.C = self.registers.A < val;
+
+        self.log("CP A [HL]:{X:02}", .{val});
         return MCycle * 2;
     }
 
@@ -1092,10 +1201,14 @@ pub const CPU = struct {
         self.registers.F.N = true;
         self.registers.F.H = (self.registers.A & 0xF) < (val & 0xF);
         self.registers.F.C = self.registers.A < val;
+
+        self.log("CP A {X:02}", .{val});
         return MCycle * 2;
     }
 
     fn cpl(self: *CPU) u32 {
+        self.log("CPL", .{});
+
         self.registers.A = ~self.registers.A;
         self.registers.F.N = true;
         self.registers.F.H = true;
@@ -1103,6 +1216,8 @@ pub const CPU = struct {
     }
 
     fn daa(self: *CPU) u32 {
+        self.log("DAA", .{});
+
         var adjustment: u8 = 0;
         if (self.registers.F.N) {
             if (self.registers.F.C) {
@@ -1136,6 +1251,8 @@ pub const CPU = struct {
         self.registers.F.Z = self.registers.getByte(r8) == 0;
         self.registers.F.N = true;
         self.registers.F.H = (val & 0xF) < 1;
+
+        self.log("DEC {s}:{X:02}", .{ @tagName(r8), val });
         return MCycle;
     }
 
@@ -1145,28 +1262,38 @@ pub const CPU = struct {
         self.registers.F.Z = (val -% 1) == 0;
         self.registers.F.N = true;
         self.registers.F.H = (val & 0xF) < 1;
+
+        self.log("DEC [HL]:{X:02}", .{val});
         return MCycle * 3;
     }
 
     fn dec_r16(self: *CPU, r16: Registers.Word) u32 {
         const val = self.registers.getWord(r16);
         self.registers.setWord(r16, val -% 1);
+
+        self.log("DEC {s}:{X:4}", .{ @tagName(r16), val });
+
         return MCycle * 2;
     }
 
     fn dec_sp(self: *CPU) u32 {
         self.registers.SP -%= 1;
+
+        self.log("DEC SP", .{});
         return MCycle * 2;
     }
 
     fn di(self: *CPU) u32 {
         self.ei_delay = false;
         self.ime = false;
+
+        self.log("DI", .{});
         return MCycle;
     }
 
     fn ei(self: *CPU) u32 {
         self.ei_delay = true;
+        self.log("EI", .{});
         return MCycle;
     }
 
@@ -1187,6 +1314,7 @@ pub const CPU = struct {
     /// * The CPU continues execution after the HALT, but the byte after it is read twice in a row (PC is not incremented, due to a hardware bug).
     fn halt_op(self: *CPU) u32 {
         self.halt = true;
+        self.log("HALT", .{});
         return 0;
     }
 
@@ -1196,6 +1324,7 @@ pub const CPU = struct {
         self.registers.F.Z = self.registers.getByte(r8) == 0;
         self.registers.F.N = false;
         self.registers.F.H = ((val & 0xF) + 1) > 0xF;
+        self.log("INC {s}:{X:02}", .{ @tagName(r8), val });
         return MCycle;
     }
 
@@ -1205,26 +1334,35 @@ pub const CPU = struct {
         self.registers.F.Z = (val +% 1) == 0;
         self.registers.F.N = false;
         self.registers.F.H = ((val & 0xF) + 1) > 0xF;
+
+        self.log("INC [HL]:{X:02}", .{val});
         return MCycle * 3;
     }
 
     fn inc_r16(self: *CPU, r16: Registers.Word) u32 {
         const val = self.registers.getWord(r16);
         self.registers.setWord(r16, val +% 1);
+
+        self.log("INC {s}:{X:4}", .{ @tagName(r16), val });
         return MCycle * 2;
     }
 
     fn inc_sp(self: *CPU) u32 {
         self.registers.SP +%= 1;
+        self.log("INC SP", .{});
         return MCycle * 2;
     }
 
     fn jp_n16(self: *CPU, n16: *const u16) u32 {
         self.registers.PC = n16.*;
+
+        self.log("JP {X:4}", .{n16.*});
+
         return MCycle * 4;
     }
 
     fn jp_cc_n16(self: *CPU, n16: *const u16, cc: ConditionCode) u32 {
+        self.log("JP {s} {X:4}", .{ @tagName(cc), n16.* });
         switch (cc) {
             .Z => {
                 if (self.registers.F.Z) {
@@ -1251,16 +1389,21 @@ pub const CPU = struct {
     }
 
     fn jp_hl(self: *CPU) u32 {
+        self.log("JP {X:4}", .{self.registers.getWord(Registers.Word.HL)});
         self.registers.PC = self.registers.getWord(Registers.Word.HL);
         return MCycle;
     }
 
     fn jr_e8(self: *CPU, e8: i8) u32 {
+        self.log("JR {}", .{e8});
+
         self.registers.PC +%= @as(u16, @bitCast(@as(i16, e8)));
         return MCycle * 3;
     }
 
     fn jr_cc_e8(self: *CPU, e8: i8, cc: ConditionCode) u32 {
+        self.log("JR {s} {} ->", .{ @tagName(cc), e8 });
+
         switch (cc) {
             .Z => {
                 if (self.registers.F.Z) {
@@ -1294,8 +1437,10 @@ pub const CPU = struct {
                 // breakpoint
             }
 
-            return noop();
+            return self.noop();
         }
+
+        self.log("LD {s} {s}", .{ @tagName(r8_left), @tagName(r8_right) });
 
         self.registers.setByte(r8_left, self.registers.getByte(r8_right));
 
@@ -1305,42 +1450,55 @@ pub const CPU = struct {
 
     /// Copy the value of the immediate byte to the register
     fn ld_r8_n8(self: *CPU, r8: Registers.Byte, n8: *const u8) u32 {
+        self.log("LD {s} {X:02}", .{ @tagName(r8), n8.* });
         self.registers.setByte(r8, n8.*);
         return MCycle * 2;
     }
 
     /// Copy the value of the immediate word to the register
     fn ld_r16_n16(self: *CPU, r16: Registers.Word, n16: *const u16) u32 {
+        self.log("LD {s} {X:4}", .{ @tagName(r16), n16.* });
+
         self.registers.setWord(r16, n16.*);
         return MCycle * 3;
     }
 
     /// Copy the value of the register to the memory location specified by the registers H and L
     fn ld_vhl_r8(self: *CPU, r8: Registers.Byte) u32 {
-        self.mmu.write(self.registers.getWord(Registers.Word.HL), self.registers.getByte(r8));
+        const val = self.registers.getByte(r8);
+        self.mmu.write(self.registers.getWord(Registers.Word.HL), val);
+        self.log("LD [HL] {s}:{X:02}", .{ @tagName(r8), val });
         return MCycle * 2;
     }
 
     /// Copy the value of the immediate byte to the memory location specified by the registers H and L
     fn ld_vhl_n8(self: *CPU, n8: *const u8) u32 {
+        self.log("LD [HL] {X:02}", .{n8.*});
+
         self.mmu.write(self.registers.getWord(Registers.Word.HL), n8.*);
         return MCycle * 3;
     }
 
     /// Copy the value of the memory location specified by the registers H and L to the register
     fn ld_r8_vhl(self: *CPU, r8: Registers.Byte) u32 {
+        self.log("LD {s} [HL]", .{@tagName(r8)});
+
         self.registers.setByte(r8, self.mmu.read(self.registers.getWord(Registers.Word.HL)));
         return MCycle * 2;
     }
 
     /// Copy the value in the register A to the byte pointed to by r16
     fn ld_vr16_a(self: *CPU, r16: Registers.Word) u32 {
+        self.log("LD [{s}] A", .{@tagName(r16)});
+
         self.mmu.write(self.registers.getWord(r16), self.registers.A);
         return MCycle * 2;
     }
 
     /// Copy the value in the register A to the byte pointed to by n16
     fn ld_n16_a(self: *CPU, n16: *const u16) u32 {
+        self.log("LD {X:4} A", .{n16.*});
+
         self.mmu.write(n16.*, self.registers.A);
 
         return MCycle * 4;
@@ -1350,6 +1508,8 @@ pub const CPU = struct {
     ///
     /// n16 must be in the range 0xFF00-0xFFFF
     fn ldh_n16_a(self: *CPU, n16: u16) u32 {
+        self.log("LDH {X:4} A", .{n16});
+
         if (n16 >= 0xFF00 and n16 <= 0xFFFF) {
             self.mmu.write(n16, self.registers.A);
         }
@@ -1359,6 +1519,8 @@ pub const CPU = struct {
 
     /// Copy the value in the register A to the byte pointed to by 0xFF00 + n8
     fn ldh_n8_a(self: *CPU, n8: *const u8) u32 {
+        self.log("LDH {X:02} A -> ", .{n8.*});
+
         return self.ldh_n16_a(0xFF00 + @as(u16, @intCast(n8.*)));
 
         // self.mmu.write(0xFF00 + @as(u16, @intCast(n8.*)), self.registers.A);
@@ -1367,19 +1529,27 @@ pub const CPU = struct {
 
     /// Copy the value in the register A to the byte pointed to by 0xFF00 + C
     fn ldh_vc_a(self: *CPU) u32 {
+        self.log("LDH [C] A", .{});
+
         self.mmu.write(0xFF00 + @as(u16, @intCast(self.registers.getByte(Registers.Byte.C))), self.registers.A);
         return MCycle * 2;
     }
 
     /// Copy the value in the byte pointed to by r16 to the register A
     fn ld_a_vr16(self: *CPU, r16: Registers.Word) u32 {
-        self.registers.A = self.mmu.read(self.registers.getWord(r16));
+        const val = self.mmu.read(self.registers.getWord(r16));
+        self.registers.A = val;
+
+        self.log("LD A [{s}]:{X:02}", .{ @tagName(r16), val });
         return MCycle * 2;
     }
 
     /// Copy the value in the byte pointed to by n16 to the register A
     fn ld_a_vn16(self: *CPU, n16: u16) u32 {
-        self.registers.A = self.mmu.read(n16);
+        const val = self.mmu.read(n16);
+        self.registers.A = val;
+
+        self.log("LD A [{X:4}]:{X:02}", .{ n16, val });
         return MCycle * 4;
     }
 
@@ -1387,21 +1557,31 @@ pub const CPU = struct {
     ///
     /// n16 must be in the range 0xFF00-0xFFFF
     fn ldh_a_vn16(self: *CPU, n16: u16) u32 {
+        const val = self.mmu.read(n16);
         if (n16 >= 0xFF00 and n16 <= 0xFFFF) {
-            self.registers.A = self.mmu.read(n16);
+            self.registers.A = val;
         }
+
+        self.log("LDH A [{X:4}]:{X:02}", .{ n16, val });
+
         return MCycle * 3;
     }
 
     /// Copy the value in the byte pointed to by 0xFF00 + n8 to the register A
     fn ldh_a_n8(self: *CPU, n8: *const u8) u32 {
-        self.registers.A = self.mmu.read(0xFF00 + @as(u16, @intCast(n8.*)));
+        const val = self.mmu.read(0xFF00 + @as(u16, @intCast(n8.*)));
+        self.registers.A = val;
+
+        self.log("LDH A {X:02}", .{n8.*});
         return MCycle * 3;
     }
 
     /// Copy the value in the byte pointed to by 0xFF00 + C to the register A
     fn ldh_a_vc(self: *CPU) u32 {
-        self.registers.A = self.mmu.read(0xFF00 + @as(u16, @intCast(self.registers.getByte(Registers.Byte.C))));
+        const val = self.mmu.read(0xFF00 + @as(u16, @intCast(self.registers.getByte(Registers.Byte.C))));
+        self.registers.A = val;
+
+        self.log("LDH A [C]:{X:02}", .{val});
         return MCycle * 2;
     }
 
@@ -1409,6 +1589,8 @@ pub const CPU = struct {
     fn ld_hli_a(self: *CPU) u32 {
         self.mmu.write(self.registers.getWord(Registers.Word.HL), self.registers.A);
         self.registers.setWord(Registers.Word.HL, self.registers.getWord(Registers.Word.HL) +% 1);
+
+        self.log("LD [HLI] A:{X:02}", .{self.registers.A});
         return MCycle * 2;
     }
 
@@ -1416,26 +1598,36 @@ pub const CPU = struct {
     fn ld_hld_a(self: *CPU) u32 {
         self.mmu.write(self.registers.getWord(Registers.Word.HL), self.registers.A);
         self.registers.setWord(Registers.Word.HL, self.registers.getWord(Registers.Word.HL) -% 1);
+
+        self.log("LD [HLD] A:{X:02}", .{self.registers.A});
         return MCycle * 2;
     }
 
     /// Copy the value in the byte pointed to by HL to the register A and decrement HL
     fn ld_a_hld(self: *CPU) u32 {
-        self.registers.A = self.mmu.read(self.registers.getWord(Registers.Word.HL));
+        const val = self.mmu.read(self.registers.getWord(Registers.Word.HL));
+        self.registers.A = val;
         self.registers.setWord(Registers.Word.HL, self.registers.getWord(Registers.Word.HL) -% 1);
+
+        self.log("LD A [HLD]:{X:02}", .{val});
         return MCycle * 2;
     }
 
     /// Copy the value in the byte pointed to by HL to the register A and increment HL
     fn ld_a_hli(self: *CPU) u32 {
-        self.registers.A = self.mmu.read(self.registers.getWord(Registers.Word.HL));
+        const val = self.mmu.read(self.registers.getWord(Registers.Word.HL));
+        self.registers.A = val;
         self.registers.setWord(Registers.Word.HL, self.registers.getWord(Registers.Word.HL) +% 1);
+
+        self.log("LD A [HLI]:{X:02}", .{val});
         return MCycle * 2;
     }
 
     /// Copy the value n16 into the register SP
     fn ld_sp_n16(self: *CPU, n16: *const u16) u32 {
         self.registers.SP = n16.*;
+
+        self.log("LD SP {X:4}", .{n16.*});
         return MCycle * 3;
     }
 
@@ -1443,6 +1635,8 @@ pub const CPU = struct {
     fn ld_vn16_sp(self: *CPU, n16: *const u16) u32 {
         self.mmu.write(n16.*, @intCast(self.registers.SP & 0xFF));
         self.mmu.write(n16.* + 1, @intCast(self.registers.SP >> 8));
+
+        self.log("LD [{}] SP:{X:4}", .{ n16.*, self.registers.SP });
         return MCycle * 5;
     }
 
@@ -1469,35 +1663,46 @@ pub const CPU = struct {
         // store result in HL
         self.registers.setWord(Registers.Word.HL, result);
 
+        self.log("LD HL SP+e8:{}", .{e8});
+
         return MCycle * 3;
     }
 
     /// Copy the value in the register HL into the register SP
     fn ld_sp_hl(self: *CPU) u32 {
-        self.registers.SP = self.registers.getWord(Registers.Word.HL);
+        const val = self.registers.getWord(Registers.Word.HL);
+        self.registers.SP = val;
+
+        self.log("LD SP HL:{X:4}", .{val});
         return MCycle * 2;
     }
 
     /// Set the value of register A to the bitwise OR between A and the value in register r8
     fn or_a_r8(self: *CPU, r8: Registers.Byte) u32 {
-        self.registers.A = self.registers.A | self.registers.getByte(r8);
+        const vr8 = self.registers.getByte(r8);
+        self.registers.A = self.registers.A | vr8;
 
         self.registers.F.Z = self.registers.A == 0;
         self.registers.F.N = false;
         self.registers.F.H = false;
         self.registers.F.C = false;
+
+        self.log("OR A {s}:{X:02}", .{ @tagName(r8), vr8 });
 
         return MCycle;
     }
 
     /// Set the value of register A to the bitwise OR between A and the value in memory at the address in register HL
     fn or_a_vhl(self: *CPU) u32 {
-        self.registers.A = self.registers.A | self.mmu.read(self.registers.getWord(Registers.Word.HL));
+        const val = self.mmu.read(self.registers.getWord(Registers.Word.HL));
+        self.registers.A = self.registers.A | val;
 
         self.registers.F.Z = self.registers.A == 0;
         self.registers.F.N = false;
         self.registers.F.H = false;
         self.registers.F.C = false;
+
+        self.log("OR A [HL]:{X:02}", .{val});
 
         return MCycle * 2;
     }
@@ -1511,6 +1716,8 @@ pub const CPU = struct {
         self.registers.F.H = false;
         self.registers.F.C = false;
 
+        self.log("OR A {X:02}", .{n8.*});
+
         return MCycle * 2;
     }
 
@@ -1520,6 +1727,8 @@ pub const CPU = struct {
         self.registers.F = @as(Flags, @bitCast(self.mmu.read(self.registers.SP) & 0xF0));
         self.registers.A = self.mmu.read(self.registers.SP + 1);
         self.registers.SP += 2;
+
+        self.log("POP AF", .{});
 
         return MCycle * 3;
     }
@@ -1545,6 +1754,8 @@ pub const CPU = struct {
             else => {},
         }
 
+        self.log("POP {s}", .{@tagName(r16)});
+
         return MCycle * 3;
     }
 
@@ -1554,11 +1765,14 @@ pub const CPU = struct {
         self.mmu.write(self.registers.SP + 1, self.registers.A);
         self.mmu.write(self.registers.SP, @as(u8, @bitCast(self.registers.F)));
 
+        self.log("PUSH AF", .{});
         return MCycle * 4;
     }
 
     /// Push register r16 to the stack
     fn push_r16(self: *CPU, r16: Registers.Word) u32 {
+        self.log("PUSH {s}:{X:4}", .{ @tagName(r16), self.registers.getWord(r16) });
+
         self.registers.SP -= 2;
         switch (r16) {
             Registers.Word.BC => {
@@ -1589,6 +1803,8 @@ pub const CPU = struct {
 
         // Applies a bitwise AND between the register value and the inverted mask (e.g. 0b11111111 & 0b10111111 -> 0b10111111)
         self.registers.setByte(r8, self.registers.getByte(r8) & invertedMask);
+
+        self.log("RES {} {s}", .{ vu3, @tagName(r8) });
         return MCycle * 2;
     }
 
@@ -1602,11 +1818,15 @@ pub const CPU = struct {
 
         // Applies a bitwise AND between the register value and the inverted mask (e.g. 0b11111111 & 0b10111111 -> 0b10111111)
         self.mmu.write(self.registers.getWord(Registers.Word.HL), self.mmu.read(self.registers.getWord(Registers.Word.HL)) & invertedMask);
+
+        self.log("RES {} [HL]", .{vu3});
         return MCycle * 4;
     }
 
     /// Returns from a function call
     fn ret(self: *CPU) u32 {
+        self.log("RET", .{});
+
         self.registers.PC = @as(u16, self.mmu.read(self.registers.SP));
         self.registers.PC |= @as(u16, self.mmu.read(self.registers.SP + 1)) << 8;
         self.registers.SP += 2;
@@ -1615,6 +1835,8 @@ pub const CPU = struct {
 
     /// Returns from a function call if condition is met
     fn ret_cc(self: *CPU, cc: ConditionCode) u32 {
+        self.log("RET {s}", .{@tagName(cc)});
+
         switch (cc) {
             ConditionCode.Z => {
                 if (self.registers.F.Z) {
@@ -1643,6 +1865,8 @@ pub const CPU = struct {
 
     /// Returns from a function call and enables interrupts
     fn reti(self: *CPU) u32 {
+        self.log("RETI", .{});
+
         const cycles = ret(self);
         self.ime = true;
         return cycles;
@@ -1663,6 +1887,8 @@ pub const CPU = struct {
         self.registers.F.N = false;
         self.registers.F.H = false;
 
+        self.log("RL {s}", .{@tagName(r8)});
+
         return MCycle * 2;
     }
 
@@ -1680,6 +1906,8 @@ pub const CPU = struct {
         self.registers.F.Z = self.mmu.read(self.registers.getWord(Registers.Word.HL)) == 0;
         self.registers.F.N = false;
         self.registers.F.H = false;
+
+        self.log("RL [HL]:{X:02}", .{val});
 
         return MCycle * 4;
     }
@@ -1699,6 +1927,8 @@ pub const CPU = struct {
         self.registers.F.N = false;
         self.registers.F.H = false;
 
+        self.log("RLA", .{});
+
         return MCycle;
     }
 
@@ -1716,6 +1946,8 @@ pub const CPU = struct {
         self.registers.F.Z = self.registers.getByte(r8) == 0;
         self.registers.F.N = false;
         self.registers.F.H = false;
+
+        self.log("RLC {s}:{X:02}", .{ @tagName(r8), val });
 
         return MCycle * 2;
     }
@@ -1735,6 +1967,8 @@ pub const CPU = struct {
         self.registers.F.N = false;
         self.registers.F.H = false;
 
+        self.log("RLC [HL]:{X:02}", .{val});
+
         return MCycle * 4;
     }
 
@@ -1751,6 +1985,8 @@ pub const CPU = struct {
         self.registers.F.Z = false;
         self.registers.F.N = false;
         self.registers.F.H = false;
+
+        self.log("RLC A:{X:02}", .{val});
 
         return MCycle;
     }
@@ -1770,6 +2006,8 @@ pub const CPU = struct {
         self.registers.F.N = false;
         self.registers.F.H = false;
 
+        self.log("RR {s}:{X:02}", .{ @tagName(r8), val });
+
         return MCycle * 2;
     }
 
@@ -1787,6 +2025,8 @@ pub const CPU = struct {
         self.registers.F.Z = self.mmu.read(self.registers.getWord(Registers.Word.HL)) == 0;
         self.registers.F.N = false;
         self.registers.F.H = false;
+
+        self.log("RR [HL]:{X:02}", .{val});
 
         return MCycle * 4;
     }
@@ -1806,6 +2046,8 @@ pub const CPU = struct {
         self.registers.F.N = false;
         self.registers.F.H = false;
 
+        self.log("RRA", .{});
+
         return MCycle;
     }
 
@@ -1824,6 +2066,8 @@ pub const CPU = struct {
         self.registers.F.N = false;
         self.registers.F.H = false;
 
+        self.log("RRC {s}:{X:02}", .{ @tagName(r8), val });
+
         return MCycle * 2;
     }
 
@@ -1841,6 +2085,8 @@ pub const CPU = struct {
         self.registers.F.N = false;
         self.registers.F.H = false;
 
+        self.log("RRC [HL]:{X:02}", .{val});
+
         return MCycle * 4;
     }
 
@@ -1857,6 +2103,8 @@ pub const CPU = struct {
         self.registers.F.Z = false;
         self.registers.F.N = false;
         self.registers.F.H = false;
+
+        self.log("RRCA", .{});
 
         return MCycle;
     }
@@ -1885,6 +2133,8 @@ pub const CPU = struct {
             else => {},
         }
 
+        self.log("RST {X:02}", .{vec});
+
         return MCycle * 4;
     }
 
@@ -1905,6 +2155,8 @@ pub const CPU = struct {
         self.registers.F.Z = self.registers.A == 0;
         self.registers.F.N = true;
 
+        self.log("SBC A {s}:{X:02}", .{ @tagName(r8), val });
+
         return MCycle;
     }
 
@@ -1923,6 +2175,8 @@ pub const CPU = struct {
         self.registers.F.C = ov1 != 0 or ov2 != 0;
         self.registers.F.Z = self.registers.A == 0;
         self.registers.F.N = true;
+
+        self.log("SBC A [HL]:{X:02}", .{val});
 
         return MCycle * 2;
     }
@@ -1943,6 +2197,8 @@ pub const CPU = struct {
         self.registers.F.Z = self.registers.A == 0;
         self.registers.F.N = true;
 
+        self.log("SBC A {X:02}", .{n8.*});
+
         return MCycle * 2;
     }
 
@@ -1952,17 +2208,25 @@ pub const CPU = struct {
         self.registers.F.N = false;
         self.registers.F.H = false;
 
+        self.log("SCF", .{});
+
         return MCycle;
     }
 
     /// Set the bit vu3 in register r8 to 1.
     fn set_u3_r8(self: *CPU, comptime vu3: u3, r8: Registers.Byte) u32 {
         self.registers.setByte(r8, self.registers.getByte(r8) | (1 << vu3));
+
+        self.log("SET {} {s}", .{ vu3, @tagName(r8) });
+
         return MCycle * 2;
     }
 
     fn set_u3_vhl(self: *CPU, comptime vu3: u3) u32 {
         self.mmu.write(self.registers.getWord(Registers.Word.HL), self.mmu.read(self.registers.getWord(Registers.Word.HL)) | (1 << vu3));
+
+        self.log("SET {} [HL]", .{vu3});
+
         return MCycle * 4;
     }
 
@@ -1974,6 +2238,8 @@ pub const CPU = struct {
         self.registers.F.Z = self.registers.getByte(r8) == 0;
         self.registers.F.N = false;
         self.registers.F.H = false;
+
+        self.log("SLA {s}:{X:02}", .{ @tagName(r8), val });
         return MCycle * 2;
     }
 
@@ -1985,6 +2251,8 @@ pub const CPU = struct {
         self.registers.F.Z = self.mmu.read(self.registers.getWord(Registers.Word.HL)) == 0;
         self.registers.F.N = false;
         self.registers.F.H = false;
+
+        self.log("SLA [HL]:{X:02}", .{val});
         return MCycle * 4;
     }
 
@@ -1997,6 +2265,8 @@ pub const CPU = struct {
         self.registers.F.Z = self.registers.getByte(r8) == 0;
         self.registers.F.N = false;
         self.registers.F.H = false;
+
+        self.log("SRA {s}:{X:02}", .{ @tagName(r8), val });
         return MCycle * 2;
     }
 
@@ -2009,6 +2279,8 @@ pub const CPU = struct {
         self.registers.F.Z = self.mmu.read(self.registers.getWord(Registers.Word.HL)) == 0;
         self.registers.F.N = false;
         self.registers.F.H = false;
+
+        self.log("SRA [HL]:{X:02}", .{val});
         return MCycle * 4;
     }
 
@@ -2020,6 +2292,8 @@ pub const CPU = struct {
         self.registers.F.Z = self.registers.getByte(r8) == 0;
         self.registers.F.N = false;
         self.registers.F.H = false;
+
+        self.log("SRL {s}:{X:02}", .{ @tagName(r8), val });
         return MCycle * 2;
     }
 
@@ -2031,14 +2305,15 @@ pub const CPU = struct {
         self.registers.F.Z = self.mmu.read(self.registers.getWord(Registers.Word.HL)) == 0;
         self.registers.F.N = false;
         self.registers.F.H = false;
+
+        self.log("SRL [HL]:{X:02}", .{val});
         return MCycle * 4;
     }
 
     /// TODO: Implement stop (https://gbdev.io/pandocs/Reducing_Power_Consumption.html#using-the-stop-instruction)
     fn stop(self: *CPU) u32 {
-        _ = self;
-
-        return noop();
+        self.log("STOP", .{});
+        return self.noop();
     }
 
     fn sub_a_r8(self: *CPU, r8: Registers.Byte) u32 {
@@ -2050,6 +2325,8 @@ pub const CPU = struct {
         self.registers.F.C = overflow == 1;
         self.registers.F.Z = result == 0;
         self.registers.F.N = true;
+
+        self.log("SUB A {s}:{X:02}", .{ @tagName(r8), val });
         return MCycle;
     }
 
@@ -2062,6 +2339,8 @@ pub const CPU = struct {
         self.registers.F.C = overflow == 1;
         self.registers.F.Z = result == 0;
         self.registers.F.N = true;
+
+        self.log("SUB A [HL]:{X:02}", .{val});
         return MCycle * 2;
     }
 
@@ -2073,6 +2352,8 @@ pub const CPU = struct {
         self.registers.F.C = overflow == 1;
         self.registers.F.Z = result == 0;
         self.registers.F.N = true;
+
+        self.log("SUB A {X:02}", .{val.*});
         return MCycle * 2;
     }
 
@@ -2084,6 +2365,8 @@ pub const CPU = struct {
         self.registers.F.N = false;
         self.registers.F.H = false;
         self.registers.F.C = false;
+
+        self.log("SWAP {s}:{X:02}", .{ @tagName(r8), val });
 
         return MCycle * 2;
     }
@@ -2097,6 +2380,8 @@ pub const CPU = struct {
         self.registers.F.H = false;
         self.registers.F.C = false;
 
+        self.log("SWAP [HL]:{X:02}", .{val});
+
         return MCycle * 4;
     }
 
@@ -2108,6 +2393,8 @@ pub const CPU = struct {
         self.registers.F.N = false;
         self.registers.F.H = false;
         self.registers.F.C = false;
+
+        self.log("XOR A {s}:{X:02}", .{ @tagName(r8), val });
 
         return MCycle * 1;
     }
@@ -2121,6 +2408,8 @@ pub const CPU = struct {
         self.registers.F.H = false;
         self.registers.F.C = false;
 
+        self.log("SLA A [HL]:{X:02}", .{val});
+
         return MCycle * 2;
     }
 
@@ -2132,6 +2421,8 @@ pub const CPU = struct {
         self.registers.F.N = false;
         self.registers.F.H = false;
         self.registers.F.C = false;
+
+        self.log("XOR A {X:02}", .{val});
 
         return MCycle * 2;
     }
