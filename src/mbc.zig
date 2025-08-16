@@ -90,7 +90,7 @@ const CartridgeHeader = struct {
     }
 
     /// Gets the ROM size in bytes
-    pub fn getROMSize(self: *CartridgeHeader) error{SizeError}!usize {
+    pub fn getROMSize(self: *CartridgeHeader) usize {
         return switch (self.rom_size) {
             0 => 32 * kByte,
             1 => 64 * kByte,
@@ -101,20 +101,34 @@ const CartridgeHeader = struct {
             6 => 2 * mByte,
             7 => 4 * mByte,
             8 => 8 * mByte,
-            else => SizeError.SizeUnused,
+            // We wan't to panic, this shouldn't be possible and is UB
+            else => unreachable,
         };
     }
 
+    /// Gets the number of ROM banks
+    pub fn getROMBankCount(self: *CartridgeHeader) usize {
+        // Each bank is 16 KiB
+        return self.getROMSize() / (16 * kByte);
+    }
+
     /// Gets the RAM size in bytes
-    pub fn getRAMSize(self: *CartridgeHeader) error{SizeError}!usize {
+    pub fn getRAMSize(self: *CartridgeHeader) usize {
         return switch (self.ram_size) {
             0 => 0,
             2 => 8 * kByte,
             3 => 32 * kByte,
             4 => 128 * kByte,
             5 => 64 * kByte,
-            else => SizeError.SizeUnused,
+            // We wan't to panic, this shouldnt be possible and is UB
+            else => unreachable,
         };
+    }
+
+    /// Gets the number of RAM banks
+    pub fn getRAMBankCount(self: *CartridgeHeader) usize {
+        // Each bank is 8 KiB
+        return self.getRAMSize() / (8 * kByte);
     }
 };
 
@@ -146,35 +160,118 @@ pub const MBC = struct {
     banking_mode: u1,
 
     game_rom: []u8,
+    external_ram: []u8,
 
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, game_rom_path: []const u8) !MBC {
         const game_rom = try std.fs.cwd().readFileAlloc(allocator, game_rom_path, mByte * 8);
+        var header = try CartridgeHeader.init(game_rom);
+
+        var external_ram: []u8 = undefined;
+        if (std.fs.cwd().openFile(&header.title, .{})) |file| {
+            // Load the previous state before the emulator was closed
+            external_ram = try file.readToEndAlloc(allocator, header.getRAMSize());
+        } else |_| {
+            // Assume there's no previous state even if it's some other error
+            external_ram = try allocator.alloc(u8, header.getRAMSize());
+        }
 
         return .{
-            .cartridge_header = try CartridgeHeader.init(game_rom),
+            .cartridge_header = header,
             .ram_enable = false,
             .rom_bank_number = 1,
             .ram_bank_number = 0,
             .banking_mode = 0,
             .game_rom = game_rom,
+            .external_ram = external_ram,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *MBC) void {
+        self.trySave();
+
+        self.allocator.free(self.external_ram);
         self.allocator.free(self.game_rom);
+    }
+
+    /// If it there's external RAM it saves it to a file with the ROM title
+    fn trySave(self: *MBC) void {
+        switch (self.cartridge_header.ctype) {
+            CartridgeHeader.Type.MBC1_RAM,
+            CartridgeHeader.Type.MBC1_RAM_BATTERY,
+            CartridgeHeader.Type.MBC3_RAM,
+            CartridgeHeader.Type.MBC3_RAM_BATTERY,
+            CartridgeHeader.Type.MBC3_TIMER_RAM_BATTERY,
+            CartridgeHeader.Type.MBC5_RAM,
+            CartridgeHeader.Type.MBC5_RAM_BATTERY,
+            CartridgeHeader.Type.MBC5_RUMBLE_RAM,
+            CartridgeHeader.Type.MBC5_RUMBLE_RAM_BATTERY,
+            CartridgeHeader.Type.MBC7_SENSOR_RUMBLE_RAM_BATTERY,
+            CartridgeHeader.Type.MMM01_RAM,
+            CartridgeHeader.Type.MMM01_RAM_BATTERY,
+            CartridgeHeader.Type.ROM_RAM,
+            CartridgeHeader.Type.ROM_RAM_BATTERY,
+            CartridgeHeader.Type.HuC1_RAM_BATTERY,
+            => {
+                if (std.fs.cwd().createFile(&self.cartridge_header.title, .{})) |file| {
+                    file.writeAll(self.external_ram) catch {};
+                } else |_| {}
+            },
+            // no op
+            else => {},
+        }
     }
 
     pub fn read(self: *MBC, addr: u16) u8 {
         // NOTE: We're ignoring the banking mode right now
         return switch (addr) {
-            0x0000...0x3FFF => self.game_rom[addr],
+            0x0000...0x3FFF => {
+                // On normal mode this is only the bank 0 and on
+                // the case where it's advanced but the ROM bank size
+                // is 32 banks (512 KiB) or less it's also always 0
+                if (self.banking_mode == 0 or self.cartridge_header.getROMBankCount() <= 32)
+                    return self.game_rom[addr];
+
+                // If the cartridge is 64 banks (1 MiB)
+                if (self.cartridge_header.getROMBankCount() == 64) {
+                    // Shifts the ram_bank_number to be the 5th bit. So this is either $00 or $20
+                    const bank = ((@as(usize, self.ram_bank_number) & 0b01) << 5);
+                    const readAddr: usize = bank * 0x4000 + addr;
+                    return self.game_rom[readAddr];
+                }
+
+                // Otherwise it's 128 banks (2 MiB) or higher
+                // Shifts the ram_bank_number to the correct place. So this is either $00, $20, $40 or $60.
+                const bank = @as(usize, self.ram_bank_number) << 5;
+                const readAddr: usize = bank * 0x4000 + addr;
+                return self.game_rom[readAddr];
+            },
             0x4000...0x7FFF => {
                 const normAddr = addr - 0x4000;
                 const baseAddr = 0x4000 * @as(usize, self.rom_bank_number);
                 return self.game_rom[baseAddr + normAddr];
+            },
+            0xA000...0xBFFF => {
+                if (!self.ram_enable) return 0xFF;
+
+                const normAddr = addr - 0xA000;
+
+                // If it's 4 banks (8 KiB) or smaller
+                if (self.cartridge_header.getRAMBankCount() <= 4) {
+                    const readAddr = normAddr % self.cartridge_header.getRAMSize();
+                    return self.external_ram[readAddr];
+                }
+
+                // If it's advanced we're doing bank switching
+                if (self.banking_mode == 1) {
+                    const readAddr = 0x2000 * @as(usize, self.ram_bank_number) + normAddr;
+                    return self.external_ram[readAddr];
+                }
+
+                // Otherwise we're bank 0
+                return self.external_ram[normAddr];
             },
             else => 0xFF,
         };
@@ -186,12 +283,36 @@ pub const MBC = struct {
             0x2000...0x3FFF => self.rom_bank_number = @as(u5, @truncate(value)) | 0x01,
             0x4000...0x5FFF => self.ram_bank_number = @as(u2, @truncate(value)),
             0x6000...0x7FFF => self.banking_mode = @as(u1, @truncate(value)),
+            0xA000...0xBFFF => {
+                if (!self.ram_enable) return;
+
+                const normAddr = addr - 0xA000;
+                // If it's 1 bank (8 KiB) or smaller
+                if (self.cartridge_header.getRAMBankCount() <= 1) {
+                    const writeAddr = normAddr % self.cartridge_header.getRAMSize();
+                    self.external_ram[writeAddr] = value;
+                    return;
+                }
+
+                // If it's advanced we're doing bank switching
+                if (self.banking_mode == 1) {
+                    const writeAddr = 0x2000 * @as(usize, self.ram_bank_number) + normAddr;
+                    self.external_ram[writeAddr] = value;
+                    return;
+                }
+
+                self.external_ram[normAddr] = value;
+            },
             else => {},
         }
     }
 
     pub fn printInfo(self: *MBC) void {
-        std.log.debug("{}", .{self.cartridge_header.ctype});
+        const ramSize = self.cartridge_header.getRAMSize();
+        const ramBanks = self.cartridge_header.getRAMBankCount();
+        const romSize = self.cartridge_header.getROMSize();
+        const romBanks = self.cartridge_header.getROMBankCount();
+        std.log.debug("{}, RAM:{} bytes | {} banks, ROM:{} bytes | {} banks", .{ self.cartridge_header.ctype, ramSize, ramBanks, romSize, romBanks });
     }
 
     pub fn dumpLogo(self: *MBC) !void {

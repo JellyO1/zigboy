@@ -160,7 +160,7 @@ pub const MMU = struct {
                 return self.mbc.read(addr);
             },
             0x8000...0x9FFF => self.vram[addr - 0x8000],
-            0xA000...0xBFFF => self.external_ram[addr - 0xA000],
+            0xA000...0xBFFF => self.mbc.read(addr),
             0xC000...0xDFFF => self.work_ram[addr - 0xC000],
             0xE000...0xFDFF => self.echo_ram[addr - 0xE000],
             0xFE00...0xFE9F => self.oam[addr - 0xFE00],
@@ -184,7 +184,7 @@ pub const MMU = struct {
                 @panic("not implemented");
             },
             0x8000...0x9FFF => &self.vram[addr - 0x8000],
-            0xA000...0xBFFF => &self.external_ram[addr - 0xA000],
+            0xA000...0xBFFF => @panic("not implemented"),
             0xC000...0xDFFF => &self.work_ram[addr - 0xC000],
             0xE000...0xFDFF => &self.echo_ram[addr - 0xE000],
             0xFE00...0xFE9F => &self.oam[addr - 0xFE00],
@@ -259,7 +259,7 @@ pub const MMU = struct {
                     self.tileset[tileIndex].data[tileY][tileX] = color;
                 }
             },
-            0xA000...0xBFFF => self.external_ram[addr - 0xA000] = value,
+            0xA000...0xBFFF => self.mbc.write(addr, value),
             0xC000...0xDFFF => {
                 self.work_ram[addr - 0xC000] = value;
                 self.echo_ram[addr - 0xC000] = value;
