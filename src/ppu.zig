@@ -205,7 +205,6 @@ pub const PPU = struct {
                     if (self.modeClock % 172 == 0) {
                         self.modeClock = 0;
 
-                        // TODO: Render scanline to framebuffer
                         self.renderScanline();
 
                         self.mode = .HBlank;
@@ -223,7 +222,7 @@ pub const PPU = struct {
 
                         self.setLYCEqualsLY();
 
-                        if (self.scanline.* == 143) {
+                        if (self.scanline.* == 144) {
                             self.mode = .VBlank;
                             self.stat.Mode = self.mode;
 
