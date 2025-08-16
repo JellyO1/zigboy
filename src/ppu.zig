@@ -179,13 +179,17 @@ pub const PPU = struct {
         self.objects.deinit();
     }
 
-    pub fn step(self: *PPU, cycles: u32) void {
+    pub fn step(self: *PPU, tCycles: u32) void {
         if (!self.lcdc.LcdPpuEnable) {
-            self.modeClock += cycles;
+            self.modeClock += tCycles;
+            self.scanline.* = 0;
+
+            self.stat.Mode = .HBlank;
+
             return;
         }
 
-        for (0..cycles) |_| {
+        for (0..tCycles) |_| {
             self.modeClock += 1;
 
             switch (self.mode) {
