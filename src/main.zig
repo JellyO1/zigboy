@@ -40,7 +40,7 @@ pub const GameBoyState = struct {
 
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, boot_rom_path: ?[]const u8, game_rom_path: []const u8) !GameBoyState {
+    pub fn init(allocator: std.mem.Allocator, boot_rom_path: ?[]const u8, game_rom_path: []const u8, logToFile: ?bool) !GameBoyState {
         var boot_rom_slice: ?[0x100]u8 = null;
 
         // Load bootrom to memory
@@ -124,10 +124,10 @@ pub const GameBoyState = struct {
     }
 
     pub fn step(self: *GameBoyState) void {
-        const cycles = self.cpu.step();
-        self.cycles += cycles;
-        self.timer.step(cycles);
-        self.ppu.step(cycles);
+        const ticks = self.cpu.step();
+        self.cycles += ticks;
+        self.ppu.step(ticks);
+        self.timer.step(ticks);
 
         // sleep for the number of nanoseconds equivalent to the number of cycles
         // std.time.sleep((cycles / CPUClockRate) * std.time.ns_per_s);
@@ -189,7 +189,8 @@ pub fn main() !void {
     // We can use `parseParamsComptime` to parse a string into an array of `Param(Help)`.
     const params = comptime clap.parseParamsComptime(
         \\-h, --help             Display this help and exit.
-        \\-b, --boot <str>   An option parameter, which takes a value.
+        \\-b, --boot <str>   An optional path to a DMG boot rom.
+        \\-l, --log <usize>  If set logs the CPU execution to a file.
         \\<str>...
         \\
     );
@@ -199,8 +200,11 @@ pub fn main() !void {
     });
     defer res.deinit();
 
-    var gameBoyState: GameBoyState = try GameBoyState.init(gpa.allocator(), res.args.boot, res.positionals[0][0]);
+    var gameBoyState: GameBoyState = try GameBoyState.init(gpa.allocator(), res.args.boot, res.positionals[0][0], res.args.log orelse 0 > 0);
     defer gameBoyState.deinit();
+
+    gameBoyState.mbc.printInfo();
+    try gameBoyState.mbc.dumpLogo();
 
     {
         errdefer |err| if (err == error.SdlError) std.log.err("SDL error: {s}", .{c.SDL_GetError()});
