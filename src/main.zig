@@ -209,10 +209,21 @@ pub fn main() !void {
 
         const mainWindow, const mainRenderer = try graphics.createWindow(@as([]const u8, "ZigBoy"), 1920, 1080);
         defer graphics.destroyWindow(mainWindow, mainRenderer);
+
+        // Disable interpolation for the textures
+
+        _ = c.SDL_SetRenderLogicalPresentation(@ptrCast(mainRenderer), 160, 144, c.SDL_LOGICAL_PRESENTATION_DISABLED);
         const framebufferTexture = c.SDL_CreateTexture(@ptrCast(mainRenderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 160, 144);
+        _ = c.SDL_SetTextureScaleMode(framebufferTexture, c.SDL_SCALEMODE_NEAREST);
+
         const tileTexture = c.SDL_CreateTexture(@ptrCast(mainRenderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 128, 192);
+        _ = c.SDL_SetTextureScaleMode(tileTexture, c.SDL_SCALEMODE_NEAREST);
+
         const tilemapTexture = c.SDL_CreateTexture(@ptrCast(mainRenderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 256, 256);
+        _ = c.SDL_SetTextureScaleMode(tilemapTexture, c.SDL_SCALEMODE_NEAREST);
+
         const tilemap2Texture = c.SDL_CreateTexture(@ptrCast(mainRenderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 256, 256);
+        _ = c.SDL_SetTextureScaleMode(tilemap2Texture, c.SDL_SCALEMODE_NEAREST);
 
         var tileBuffer: ?*anyopaque = null;
         var tilePitch: c_int = 0;
