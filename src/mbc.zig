@@ -293,15 +293,19 @@ pub const MBC = struct {
     pub fn write(self: *MBC, addr: u16, value: u8) void {
         switch (addr) {
             0x0000...0x1FFF => self.ram_enable = @as(u4, @truncate(value)) == 0xA,
-            0x2000...0x3FFF => self.rom_bank_number = @as(u5, @truncate(value)) | 0x01,
+            0x2000...0x3FFF => {
+                self.rom_bank_number = @as(u5, @truncate(value));
+                // Set to 1 if it's ever set to 0
+                if (self.rom_bank_number == 0) self.rom_bank_number = 1;
+            },
             0x4000...0x5FFF => self.ram_bank_number = @as(u2, @truncate(value)),
             0x6000...0x7FFF => self.banking_mode = @as(u1, @truncate(value)),
             0xA000...0xBFFF => {
-                if (!self.ram_enable) return;
+                if (!self.ram_enable or self.cartridge_header.getRAMSize() == 0) return;
 
                 const normAddr = addr - 0xA000;
                 // If it's 1 bank (8 KiB) or smaller
-                if (self.cartridge_header.getRAMBankCount() <= 1) {
+                if (self.cartridge_header.getRAMBankCount() == 1) {
                     const writeAddr = normAddr % self.cartridge_header.getRAMSize();
                     self.external_ram[writeAddr] = value;
                     return;
