@@ -10,7 +10,14 @@ const TimerControl = packed struct(u8) {
     _: u5 = 0,
 };
 
-const ClockSelectCycles: [4]u32 = .{ 256 * MCycle, 4 * MCycle, 16 * MCycle, 64 * MCycle };
+fn clockSelectThreshold(clockSelect: u2) u32 {
+    return switch (clockSelect) {
+        0 => 256 * MCycle,
+        1 => 4 * MCycle,
+        2 => 16 * MCycle,
+        3 => 64 * MCycle,
+    };
+}
 
 pub const Timer = struct {
     // Divider register
@@ -25,10 +32,10 @@ pub const Timer = struct {
     IF: *mmuz.InterruptFlags,
 
     divCycles: u32,
-    cycles: u32,
+    timerCycles: u32,
 
-    // Divider increments at a rate of 16384Hz or 4096 M-cycles
-    const divRate: u16 = 16384;
+    // Divider increments at a rate of 64 M-cycles
+    const divRate: u16 = 64 * MCycle;
 
     pub fn init(mmu: *mmuz.MMU) Timer {
         return .{
@@ -37,40 +44,42 @@ pub const Timer = struct {
             .tma = mmu.readPtr(mmuz.MMU.TMA_ADDR),
             .tac = @ptrCast(mmu.readPtr(mmuz.MMU.TAC_ADDR)),
             .IF = @ptrCast(mmu.readPtr(mmuz.MMU.IF_ADDR)),
-            .cycles = 0,
+            .timerCycles = 0,
             .divCycles = 0,
         };
     }
 
-    pub fn step(self: *Timer, cycles: u32) void {
-        self.cycles += cycles;
-        self.divCycles += cycles;
+    pub fn step(self: *Timer, ticks: u32) void {
+        self.divCycles += ticks;
 
         // Check if we need to increment the DIV register
         while (self.divCycles >= divRate) {
             self.divCycles -= divRate;
             self.div.* +%= 1;
         }
-        // self.cycles += cycles;
-        // self.divCycles += cycles;
 
-        // Check the increment rate that is set on the TAC
         // Only increment the timer if it's enabled
-        if (self.tac.Enable) {
-            while (self.cycles >= ClockSelectCycles[self.tac.ClockSelect]) {
-                self.cycles -= ClockSelectCycles[self.tac.ClockSelect];
+        if (!self.tac.Enable) {
+            return;
+        }
 
-                const res, const overflow = @addWithOverflow(self.tima.*, 1);
-                // The counter overflowed (exceeds $FF)
-                if (overflow == 1) {
-                    // Reset counter to TMA
-                    self.tima.* = self.tma.*;
+        self.timerCycles += ticks;
 
-                    // Request timer interrupt
-                    self.IF.Timer = true;
-                } else {
-                    self.tima.* = res;
-                }
+        const threshold = clockSelectThreshold(self.tac.ClockSelect);
+
+        while (self.timerCycles >= threshold) {
+            self.timerCycles -= threshold;
+
+            const res: u8, const overflow: u1 = @addWithOverflow(self.tima.*, 1);
+            // The counter overflowed (exceeds $FF)
+            if (overflow == 1) {
+                // Reset counter to TMA
+                self.tima.* = self.tma.*;
+
+                // Request timer interrupt
+                self.IF.Timer = true;
+            } else {
+                self.tima.* = res;
             }
         }
     }
