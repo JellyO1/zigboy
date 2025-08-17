@@ -72,7 +72,7 @@ const CartridgeHeader = struct {
         SizeUnused,
     };
 
-    pub fn init(data: []u8) !CartridgeHeader {
+    pub fn init(data: []const u8) !CartridgeHeader {
         return .{
             .logo = data[0x104..0x134].*,
             .title = data[0x134..0x144].*,
@@ -86,6 +86,23 @@ const CartridgeHeader = struct {
             .old_licensee_code = data[0x14B],
             .header_checksum = data[0x14D],
             .global_checksum = @as(u16, data[0x14E]) << 8 | @as(u16, data[0x14F]),
+        };
+    }
+
+    pub fn empty() CartridgeHeader {
+        return .{
+            .logo = std.mem.zeroes([48]u8),
+            .title = std.mem.zeroes([16]u8),
+            .manufacturer_code = std.mem.zeroes([4]u8),
+            .cgb_only = false,
+            .licensee_code = 0,
+            .ctype = Type.ROM_ONLY,
+            .rom_size = 0,
+            .ram_size = 0,
+            .dest_code = 0,
+            .old_licensee_code = 0,
+            .header_checksum = 0,
+            .global_checksum = 0,
         };
     }
 
@@ -172,22 +189,25 @@ pub const MBC = struct {
     /// the ram_bank_number register.
     banking_mode: u1,
 
-    game_rom: []u8,
-    external_ram: []u8,
+    game_rom: ?[]const u8,
+    external_ram: ?[]u8,
 
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, game_rom_path: []const u8) !MBC {
-        const game_rom = try std.fs.cwd().readFileAlloc(allocator, game_rom_path, mByte * 8);
-        var header = try CartridgeHeader.init(game_rom);
+    pub fn init(allocator: std.mem.Allocator, game_rom: ?[]const u8) !MBC {
+        var header = CartridgeHeader.empty();
+        var external_ram: ?[]u8 = null;
 
-        var external_ram: []u8 = undefined;
-        if (std.fs.cwd().openFile(header.getTitle(), .{})) |file| {
-            // Load the previous state before the emulator was closed
-            external_ram = try file.readToEndAlloc(allocator, header.getRAMSize());
-        } else |_| {
-            // Assume there's no previous state even if it's some other error
-            external_ram = try allocator.alloc(u8, header.getRAMSize());
+        if (game_rom) |gr| {
+            header = try CartridgeHeader.init(gr);
+
+            if (std.fs.cwd().openFile(header.getTitle(), .{})) |file| {
+                // Load the previous state before the emulator was closed
+                external_ram = try file.readToEndAlloc(allocator, header.getRAMSize());
+            } else |_| {
+                // Assume there's no previous state even if it's some other error
+                external_ram = try allocator.alloc(u8, header.getRAMSize());
+            }
         }
 
         return .{
@@ -205,12 +225,13 @@ pub const MBC = struct {
     pub fn deinit(self: *MBC) void {
         self.trySave();
 
-        self.allocator.free(self.external_ram);
-        self.allocator.free(self.game_rom);
+        if (self.external_ram != null) self.allocator.free(self.external_ram.?);
     }
 
     /// If it there's external RAM it saves it to a file with the ROM title
     fn trySave(self: *MBC) void {
+        if (self.external_ram == null) return;
+
         switch (self.cartridge_header.ctype) {
             CartridgeHeader.Type.MBC1_RAM,
             CartridgeHeader.Type.MBC1_RAM_BATTERY,
@@ -229,7 +250,7 @@ pub const MBC = struct {
             CartridgeHeader.Type.HuC1_RAM_BATTERY,
             => {
                 if (std.fs.cwd().createFile(self.cartridge_header.getTitle(), .{})) |file| {
-                    file.writeAll(self.external_ram) catch {};
+                    file.writeAll(self.external_ram.?) catch {};
                 } else |_| {}
             },
             // no op
@@ -238,53 +259,56 @@ pub const MBC = struct {
     }
 
     pub fn read(self: *MBC, addr: u16) u8 {
-        // NOTE: We're ignoring the banking mode right now
         return switch (addr) {
             0x0000...0x3FFF => {
+                if (self.game_rom == null) return 0xFF;
+
                 // On normal mode this is only the bank 0 and on
                 // the case where it's advanced but the ROM bank size
                 // is 32 banks (512 KiB) or less it's also always 0
                 if (self.banking_mode == 0 or self.cartridge_header.getROMBankCount() <= 32)
-                    return self.game_rom[addr];
+                    return self.game_rom.?[addr];
 
                 // If the cartridge is 64 banks (1 MiB)
                 if (self.cartridge_header.getROMBankCount() == 64) {
                     // Shifts the ram_bank_number to be the 5th bit. So this is either $00 or $20
                     const bank = ((@as(usize, self.ram_bank_number) & 0b01) << 5);
                     const readAddr: usize = bank * 0x4000 + addr;
-                    return self.game_rom[readAddr];
+                    return self.game_rom.?[readAddr];
                 }
 
                 // Otherwise it's 128 banks (2 MiB) or higher
                 // Shifts the ram_bank_number to the correct place. So this is either $00, $20, $40 or $60.
                 const bank = @as(usize, self.ram_bank_number) << 5;
                 const readAddr: usize = bank * 0x4000 + addr;
-                return self.game_rom[readAddr];
+                return self.game_rom.?[readAddr];
             },
             0x4000...0x7FFF => {
+                if (self.game_rom == null) return 0xFF;
+
                 const normAddr = addr - 0x4000;
                 const baseAddr = 0x4000 * @as(usize, self.rom_bank_number);
-                return self.game_rom[baseAddr + normAddr];
+                return self.game_rom.?[baseAddr + normAddr];
             },
             0xA000...0xBFFF => {
-                if (!self.ram_enable) return 0xFF;
+                if (!self.ram_enable or self.external_ram == null) return 0xFF;
 
                 const normAddr = addr - 0xA000;
 
                 // If it's 4 banks (8 KiB) or smaller
                 if (self.cartridge_header.getRAMBankCount() <= 4) {
                     const readAddr = normAddr % self.cartridge_header.getRAMSize();
-                    return self.external_ram[readAddr];
+                    return self.external_ram.?[readAddr];
                 }
 
                 // If it's advanced we're doing bank switching
                 if (self.banking_mode == 1) {
                     const readAddr = 0x2000 * @as(usize, self.ram_bank_number) + normAddr;
-                    return self.external_ram[readAddr];
+                    return self.external_ram.?[readAddr];
                 }
 
                 // Otherwise we're bank 0
-                return self.external_ram[normAddr];
+                return self.external_ram.?[normAddr];
             },
             else => 0xFF,
         };
@@ -301,24 +325,24 @@ pub const MBC = struct {
             0x4000...0x5FFF => self.ram_bank_number = @as(u2, @truncate(value)),
             0x6000...0x7FFF => self.banking_mode = @as(u1, @truncate(value)),
             0xA000...0xBFFF => {
-                if (!self.ram_enable or self.cartridge_header.getRAMSize() == 0) return;
+                if (!self.ram_enable or self.external_ram == null or self.cartridge_header.getRAMSize() == 0) return;
 
                 const normAddr = addr - 0xA000;
                 // If it's 1 bank (8 KiB) or smaller
                 if (self.cartridge_header.getRAMBankCount() == 1) {
                     const writeAddr = normAddr % self.cartridge_header.getRAMSize();
-                    self.external_ram[writeAddr] = value;
+                    self.external_ram.?[writeAddr] = value;
                     return;
                 }
 
                 // If it's advanced we're doing bank switching
                 if (self.banking_mode == 1) {
                     const writeAddr = 0x2000 * @as(usize, self.ram_bank_number) + normAddr;
-                    self.external_ram[writeAddr] = value;
+                    self.external_ram.?[writeAddr] = value;
                     return;
                 }
 
-                self.external_ram[normAddr] = value;
+                self.external_ram.?[normAddr] = value;
             },
             else => {},
         }

@@ -36,6 +36,9 @@ pub fn build(b: *std.Build) void {
 
     const clap = b.dependency("clap", .{});
 
+    const nfd = b.dependency("nfd", .{});
+    const nfd_mod = nfd.module("nfd");
+
     // We will also create a module for our other entry point, 'main.zig'.
     const exe_mod = b.createModule(.{
         // `root_source_file` is the Zig "entry point" of the module. If a module
@@ -60,6 +63,7 @@ pub fn build(b: *std.Build) void {
     exe.linkLibC();
     exe.linkLibrary(cimgui_dep.artifact("cimgui"));
     exe.root_module.addImport("clap", clap.module("clap"));
+    exe.root_module.addImport("nfd", nfd_mod);
 
     if (enable_tracy) {
         exe.linkLibrary(tracy_dep.artifact("tracy"));

@@ -48,6 +48,10 @@
             .url = "https://github.com/Hejsil/zig-clap/archive/refs/tags/0.10.0.tar.gz",
             .hash = "clap-0.10.0-oBajB434AQBDh-Ei3YtoKIRxZacVPF1iSwp3IX_ZB8f0",
         },
+        .nfd = .{
+            .url = "git+https://github.com/fabioarnold/nfd-zig#ad81729d33da30d5f4fd23718debec48245121ca",
+            .hash = "N-V-__8AAPOHBgCmeTgIR1EyYsjFxHTUpBX57MSSHIxq7729",
+        },
     },
     .paths = .{
         "build.zig",

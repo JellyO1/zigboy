@@ -39,26 +39,32 @@ pub const Emulator = struct {
     /// Total cycles elapsed
     cycles: u64,
 
+    boot_rom: ?[]u8 = null,
+    game_rom: ?[]u8 = null,
+
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, boot_rom_path: ?[]const u8, game_rom_path: []const u8, logToFile: ?bool) !Emulator {
-        var boot_rom_slice: ?[0x100]u8 = null;
+    pub fn init(allocator: std.mem.Allocator, boot_rom_path: ?[]const u8, game_rom_path: ?[]const u8, logToFile: ?bool) !Emulator {
+        var boot_rom: ?[]u8 = null;
 
         // Load bootrom to memory
         if (boot_rom_path != null) {
-            const boot_rom = try std.fs.cwd().readFileAlloc(std.heap.page_allocator, boot_rom_path.?, 256);
-            defer std.heap.page_allocator.free(boot_rom);
-            boot_rom_slice = boot_rom[0..0x100].*;
+            boot_rom = try std.fs.cwd().readFileAlloc(allocator, boot_rom_path.?, 256);
+        }
+
+        var game_rom: ?[]u8 = null;
+        if (game_rom_path) |path| {
+            game_rom = try std.fs.cwd().readFileAlloc(allocator, path, 8 * 1024 * 1024); // 8 MiB
         }
 
         const mbc = try allocator.create(MBC);
-        mbc.* = try MBC.init(allocator, game_rom_path);
+        mbc.* = try MBC.init(allocator, game_rom);
 
         const mmui = try allocator.create(MMU);
-        mmui.* = MMU.init(boot_rom_slice, mbc);
+        mmui.* = MMU.init(boot_rom, mbc);
 
         const cpui = try allocator.create(CPU);
-        cpui.* = try CPU.init(allocator, if (boot_rom_path == null) cpu.Registers{
+        cpui.* = try CPU.init(allocator, if (boot_rom == null) cpu.Registers{
             .A = 0x11,
             .B = 0x00,
             .C = 0x00,
@@ -79,18 +85,23 @@ pub const Emulator = struct {
         const timer = try allocator.create(Timer);
         timer.* = Timer.init(mmui);
 
-        return .{
+        return Emulator{
             .cpu = cpui,
             .mmu = mmui,
             .ppu = ppui,
             .timer = timer,
             .mbc = mbc,
             .cycles = 0,
+            .boot_rom = boot_rom,
+            .game_rom = game_rom,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *Emulator) void {
+        if (self.boot_rom) |rom| self.allocator.free(rom);
+        if (self.game_rom) |rom| self.allocator.free(rom);
+
         self.ppu.deinit();
         self.cpu.deinit();
         self.mbc.deinit();
@@ -129,9 +140,6 @@ pub const Emulator = struct {
         self.cycles += ticks;
         self.ppu.step(ticks);
         self.timer.step(ticks);
-
-        // sleep for the number of nanoseconds equivalent to the number of cycles
-        // std.time.sleep((cycles / CPUClockRate) * std.time.ns_per_s);
     }
 
     pub fn keyPress(self: *Emulator, key: c.SDL_Keycode, down: bool) void {
@@ -169,9 +177,18 @@ pub const Emulator = struct {
     }
 };
 
+pub const Event = union(enum) {
+    Open: []const u8,
+};
+
+pub const EventQueue = std.ArrayList(Event);
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
+
+    var events = EventQueue.init(gpa.allocator());
+    defer events.deinit();
 
     // First we specify what parameters our program can take.
     // We can use `parseParamsComptime` to parse a string into an array of `Param(Help)`.
@@ -188,7 +205,14 @@ pub fn main() !void {
     });
     defer res.deinit();
 
-    var emulator: Emulator = try Emulator.init(gpa.allocator(), res.args.boot, res.positionals[0][0], res.args.log orelse 0 > 0);
+    const positionals = res.positionals[0];
+
+    var emulator: Emulator = try Emulator.init(
+        gpa.allocator(),
+        res.args.boot,
+        if (positionals.len > 0) positionals[0] else null,
+        res.args.log orelse 0 > 0,
+    );
     defer emulator.deinit();
 
     emulator.mbc.printInfo();
@@ -201,7 +225,8 @@ pub fn main() !void {
         const mainWindow, const mainRenderer = try window.createWindow(@as([]const u8, "ZigBoy"), 1920, 1080);
         defer window.destroyWindow(mainWindow, mainRenderer);
 
-        var gui = ui.UI.init(&emulator, @ptrCast(mainRenderer));
+        var gui = ui.UI.init(gpa.allocator(), &emulator, @ptrCast(mainRenderer), &events);
+        defer gui.deinit();
 
         const TARGET_FPS = 59.7;
         const FRAME_TIME_MS: f64 = 1000.0 / TARGET_FPS; // ~16.75 ms per frame
@@ -210,7 +235,7 @@ pub fn main() !void {
         var lastFrameTime = c.SDL_GetTicks();
 
         mainLoop: while (true) {
-            emulator.step();
+            events.clearRetainingCapacity();
 
             var ev: c.SDL_Event = undefined;
             while (c.SDL_PollEvent(&ev)) {
@@ -223,18 +248,15 @@ pub fn main() !void {
                     },
                     else => {},
                 }
-                if (ev.type == c.SDL_EVENT_QUIT) {
-                    break :mainLoop;
-                }
             }
 
-            // delay to keep steady fps
             if (emulator.cycles >= CYCLES_PER_FRAME) {
                 emulator.cycles -= CYCLES_PER_FRAME;
 
                 const currentTime = c.SDL_GetTicks();
                 const frameTime: f64 = @floatFromInt(currentTime - lastFrameTime);
 
+                // delay to keep steady fps
                 if (frameTime < FRAME_TIME_MS) {
                     const delayTime: u32 = @intFromFloat(FRAME_TIME_MS - frameTime);
                     c.SDL_Delay(delayTime);
@@ -245,6 +267,18 @@ pub fn main() !void {
 
                 lastFrameTime = c.SDL_GetTicks();
             }
+
+            // UI events
+            for (events.items) |event| {
+                switch (event) {
+                    .Open => |filePath| {
+                        emulator.deinit();
+                        emulator = try Emulator.init(gpa.allocator(), res.args.boot, filePath, res.args.log orelse 0 > 0);
+                    },
+                }
+            }
+
+            emulator.step();
         }
     }
 }

@@ -131,9 +131,9 @@ pub const MMU = struct {
     // Memory Bank Controller
     mbc: *mbcz.MBC,
 
-    pub fn init(boot_rom: ?[0x100]u8, mbc: *mbcz.MBC) MMU {
+    pub fn init(boot_rom: ?[]u8, mbc: *mbcz.MBC) MMU {
         return .{
-            .boot_rom = boot_rom orelse std.mem.zeroes([0x100]u8),
+            .boot_rom = if (boot_rom) |br| br[0..0x100].* else std.mem.zeroes([0x100]u8),
             .boot_rom_enabled = if (boot_rom == null) false else true,
             .vram = std.mem.zeroes([0x2000]u8),
             .external_ram = std.mem.zeroes([0x2000]u8),

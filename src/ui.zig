@@ -9,7 +9,9 @@ const c = @cImport({
     @cInclude("backends/dcimgui_impl_sdl3.h");
     @cInclude("backends/dcimgui_impl_sdlrenderer3.h");
 });
+const nfd = @import("nfd");
 const Emulator = @import("main.zig").Emulator;
+const EventQueue = @import("main.zig").EventQueue;
 const tracy = @import("tracy");
 const ppui = @import("ppu.zig");
 const PPU = ppui.PPU;
@@ -31,8 +33,10 @@ pub const UI = struct {
 
     emulator: *Emulator,
     renderer: *c.SDL_Renderer,
+    allocator: std.mem.Allocator,
+    events: *EventQueue,
 
-    pub fn init(emulator: *Emulator, renderer: *c.SDL_Renderer) UI {
+    pub fn init(allocator: std.mem.Allocator, emulator: *Emulator, renderer: *c.SDL_Renderer, events: *EventQueue) UI {
         const framebufferTexture = c.SDL_CreateTexture(@ptrCast(renderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 160, 144);
         _ = c.SDL_SetTextureScaleMode(framebufferTexture, c.SDL_SCALEMODE_NEAREST);
 
@@ -48,7 +52,15 @@ pub const UI = struct {
             .tilemapTexture = tilemapTexture,
             .emulator = emulator,
             .renderer = renderer,
+            .allocator = allocator,
+            .events = events,
         };
+    }
+
+    pub fn deinit(self: *UI) void {
+        c.SDL_DestroyTexture(self.framebufferTexture);
+        c.SDL_DestroyTexture(self.tilesTexture);
+        c.SDL_DestroyTexture(self.tilemapTexture);
     }
 
     fn fitAspect(img_w: f32, img_h: f32) struct { w: f32, h: f32 } {
@@ -67,6 +79,21 @@ pub const UI = struct {
     fn drawMenuBar(self: *UI) void {
         if (c.ImGui_BeginMainMenuBar()) {
             if (c.ImGui_BeginMenu("File")) {
+                if (c.ImGui_MenuItem("Open")) {
+                    const cwd = std.fs.selfExeDirPathAlloc(self.allocator) catch "";
+                    defer self.allocator.free(cwd);
+
+                    const cwdZ = self.allocator.dupeZ(u8, cwd) catch "";
+                    defer self.allocator.free(cwdZ);
+
+                    const filePath = nfd.openFileDialog("gb", cwdZ) catch null;
+
+                    if (filePath) |fp| {
+                        const fps: []const u8 = std.mem.span(fp.ptr);
+                        self.events.append(.{ .Open = fps }) catch {};
+                    }
+                }
+
                 c.ImGui_EndMenu();
             }
             if (c.ImGui_BeginMenu("Windows")) {
@@ -79,6 +106,7 @@ pub const UI = struct {
     }
 
     fn drawVRAMViewer(self: *UI, ppu: *PPU, open: *bool) void {
+        // NOTE: I know this is code-smell but it's fine for now since I might split this into it's own 'view' later
         const S = struct {
             var tilemap: ppui.Tilemap = ppui.Tilemap.T9800;
         };
