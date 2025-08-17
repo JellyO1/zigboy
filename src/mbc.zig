@@ -130,6 +130,19 @@ const CartridgeHeader = struct {
         // Each bank is 8 KiB
         return self.getRAMSize() / (8 * kByte);
     }
+
+    // Gets a non null terminated string of the title
+    pub fn getTitle(self: *CartridgeHeader) []u8 {
+        var len: u8 = 0;
+
+        for (self.title) |c| {
+            if (c == 0) break;
+
+            len += 1;
+        }
+
+        return self.title[0..len];
+    }
 };
 
 pub const MBC = struct {
@@ -169,7 +182,7 @@ pub const MBC = struct {
         var header = try CartridgeHeader.init(game_rom);
 
         var external_ram: []u8 = undefined;
-        if (std.fs.cwd().openFile(&header.title, .{})) |file| {
+        if (std.fs.cwd().openFile(header.getTitle(), .{})) |file| {
             // Load the previous state before the emulator was closed
             external_ram = try file.readToEndAlloc(allocator, header.getRAMSize());
         } else |_| {
@@ -215,7 +228,7 @@ pub const MBC = struct {
             CartridgeHeader.Type.ROM_RAM_BATTERY,
             CartridgeHeader.Type.HuC1_RAM_BATTERY,
             => {
-                if (std.fs.cwd().createFile(&self.cartridge_header.title, .{})) |file| {
+                if (std.fs.cwd().createFile(self.cartridge_header.getTitle(), .{})) |file| {
                     file.writeAll(self.external_ram) catch {};
                 } else |_| {}
             },
