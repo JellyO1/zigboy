@@ -1,5 +1,5 @@
 const std = @import("std");
-const GameBoyState = @import("main.zig").GameBoyState;
+const Emulator = @import("main.zig").Emulator;
 const mmuz = @import("mmu.zig");
 
 const LCDControl = packed struct(u8) {
@@ -489,6 +489,10 @@ pub const PPU = struct {
                 }
             }
         }
+    }
+
+    pub fn drawFramebuffer(self: *PPU, buffer: *[160 * 144]RGBA) void {
+        @memcpy(buffer, &self.framebuffer);
     }
 
     pub fn debugTilemap(state: *PPU, buffer: *[256 * 256]RGBA, tilemap: Tilemap) void {

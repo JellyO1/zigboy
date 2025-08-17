@@ -14,7 +14,8 @@ const c = @cImport({
     @cInclude("backends/dcimgui_impl_sdlrenderer3.h");
 });
 
-const graphics = @import("graphics.zig");
+const window = @import("window.zig");
+const ui = @import("ui.zig");
 const cpu = @import("cpu.zig");
 const CPU = cpu.CPU;
 const ppu = @import("ppu.zig");
@@ -25,7 +26,7 @@ const Timer = @import("timer.zig").Timer;
 const MBC = @import("mbc.zig").MBC;
 const tracy = @import("tracy");
 
-pub const GameBoyState = struct {
+pub const Emulator = struct {
     /// Picture Processing Unit
     ppu: *PPU,
     /// Central Processing Unit
@@ -40,7 +41,7 @@ pub const GameBoyState = struct {
 
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, boot_rom_path: ?[]const u8, game_rom_path: []const u8, logToFile: ?bool) !GameBoyState {
+    pub fn init(allocator: std.mem.Allocator, boot_rom_path: ?[]const u8, game_rom_path: []const u8, logToFile: ?bool) !Emulator {
         var boot_rom_slice: ?[0x100]u8 = null;
 
         // Load bootrom to memory
@@ -89,7 +90,7 @@ pub const GameBoyState = struct {
         };
     }
 
-    pub fn deinit(self: *GameBoyState) void {
+    pub fn deinit(self: *Emulator) void {
         self.ppu.deinit();
         self.cpu.deinit();
         self.mbc.deinit();
@@ -101,7 +102,7 @@ pub const GameBoyState = struct {
         self.allocator.destroy(self.mbc);
     }
 
-    pub fn initTest(allocator: std.mem.Allocator, registers: cpu.Registers, ime: bool, ei_delay: bool) !GameBoyState {
+    pub fn initTest(allocator: std.mem.Allocator, registers: cpu.Registers, ime: bool, ei_delay: bool) !Emulator {
         const mmui = try allocator.create(MMU);
         mmui.* = MMU.init(null, null);
 
@@ -123,7 +124,7 @@ pub const GameBoyState = struct {
         };
     }
 
-    pub fn step(self: *GameBoyState) void {
+    pub fn step(self: *Emulator) void {
         const ticks = self.cpu.step();
         self.cycles += ticks;
         self.ppu.step(ticks);
@@ -133,7 +134,7 @@ pub const GameBoyState = struct {
         // std.time.sleep((cycles / CPUClockRate) * std.time.ns_per_s);
     }
 
-    pub fn keyPress(self: *GameBoyState, key: c.SDL_Keycode, down: bool) void {
+    pub fn keyPress(self: *Emulator, key: c.SDL_Keycode, down: bool) void {
         const joypad: *mmu.Joypad = @ptrCast(self.mmu.readPtr(mmu.MMU.JOYP_ADDR));
 
         switch (key) {
@@ -168,19 +169,6 @@ pub const GameBoyState = struct {
     }
 };
 
-fn fitAspect(img_w: f32, img_h: f32) struct { w: f32, h: f32 } {
-    const avail = c.ImGui_GetContentRegionAvail();
-    const aspect = img_w / img_h;
-    var draw_w = avail.x;
-    var draw_h = avail.y;
-    if (draw_w / aspect > draw_h) {
-        draw_w = draw_h * aspect;
-    } else {
-        draw_h = draw_w / aspect;
-    }
-    return .{ .w = draw_w, .h = draw_h };
-}
-
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -200,43 +188,20 @@ pub fn main() !void {
     });
     defer res.deinit();
 
-    var gameBoyState: GameBoyState = try GameBoyState.init(gpa.allocator(), res.args.boot, res.positionals[0][0], res.args.log orelse 0 > 0);
-    defer gameBoyState.deinit();
+    var emulator: Emulator = try Emulator.init(gpa.allocator(), res.args.boot, res.positionals[0][0], res.args.log orelse 0 > 0);
+    defer emulator.deinit();
 
-    gameBoyState.mbc.printInfo();
-    try gameBoyState.mbc.dumpLogo();
+    emulator.mbc.printInfo();
 
     {
         errdefer |err| if (err == error.SdlError) std.log.err("SDL error: {s}", .{c.SDL_GetError()});
 
-        try graphics.init();
+        try window.init();
 
-        const mainWindow, const mainRenderer = try graphics.createWindow(@as([]const u8, "ZigBoy"), 1920, 1080);
-        defer graphics.destroyWindow(mainWindow, mainRenderer);
+        const mainWindow, const mainRenderer = try window.createWindow(@as([]const u8, "ZigBoy"), 1920, 1080);
+        defer window.destroyWindow(mainWindow, mainRenderer);
 
-        // Disable interpolation for the textures
-
-        _ = c.SDL_SetRenderLogicalPresentation(@ptrCast(mainRenderer), 160, 144, c.SDL_LOGICAL_PRESENTATION_DISABLED);
-        const framebufferTexture = c.SDL_CreateTexture(@ptrCast(mainRenderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 160, 144);
-        _ = c.SDL_SetTextureScaleMode(framebufferTexture, c.SDL_SCALEMODE_NEAREST);
-
-        const tileTexture = c.SDL_CreateTexture(@ptrCast(mainRenderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 128, 192);
-        _ = c.SDL_SetTextureScaleMode(tileTexture, c.SDL_SCALEMODE_NEAREST);
-
-        const tilemapTexture = c.SDL_CreateTexture(@ptrCast(mainRenderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 256, 256);
-        _ = c.SDL_SetTextureScaleMode(tilemapTexture, c.SDL_SCALEMODE_NEAREST);
-
-        const tilemap2Texture = c.SDL_CreateTexture(@ptrCast(mainRenderer), c.SDL_PIXELFORMAT_RGBA8888, c.SDL_TEXTUREACCESS_STREAMING, 256, 256);
-        _ = c.SDL_SetTextureScaleMode(tilemap2Texture, c.SDL_SCALEMODE_NEAREST);
-
-        var tileBuffer: ?*anyopaque = null;
-        var tilePitch: c_int = 0;
-
-        var tilemapBuffer: ?*anyopaque = null;
-        var tilemapPitch: c_int = 0;
-
-        var tilemap2Buffer: ?*anyopaque = null;
-        var tilemap2Pitch: c_int = 0;
+        var gui = ui.UI.init(&emulator, @ptrCast(mainRenderer));
 
         const TARGET_FPS = 59.7;
         const FRAME_TIME_MS: f64 = 1000.0 / TARGET_FPS; // ~16.75 ms per frame
@@ -245,9 +210,7 @@ pub fn main() !void {
         var lastFrameTime = c.SDL_GetTicks();
 
         mainLoop: while (true) {
-            tracy.frameMark();
-
-            gameBoyState.step();
+            emulator.step();
 
             var ev: c.SDL_Event = undefined;
             while (c.SDL_PollEvent(&ev)) {
@@ -256,7 +219,7 @@ pub fn main() !void {
                     c.SDL_EVENT_QUIT => break :mainLoop,
                     c.SDL_EVENT_KEY_DOWN, c.SDL_EVENT_KEY_UP => {
                         const keyEvent: *c.SDL_KeyboardEvent = @ptrCast(&ev);
-                        gameBoyState.keyPress(keyEvent.key, keyEvent.down);
+                        emulator.keyPress(keyEvent.key, keyEvent.down);
                     },
                     else => {},
                 }
@@ -266,8 +229,8 @@ pub fn main() !void {
             }
 
             // delay to keep steady fps
-            if (gameBoyState.cycles >= CYCLES_PER_FRAME) {
-                gameBoyState.cycles -= CYCLES_PER_FRAME;
+            if (emulator.cycles >= CYCLES_PER_FRAME) {
+                emulator.cycles -= CYCLES_PER_FRAME;
 
                 const currentTime = c.SDL_GetTicks();
                 const frameTime: f64 = @floatFromInt(currentTime - lastFrameTime);
@@ -278,131 +241,7 @@ pub fn main() !void {
                     // std.debug.print("slept for {d} ms", .{delayTime});
                 }
 
-                // Prepare for ImGui frame.
-                // Start the Dear ImGui frame
-                c.cImGui_ImplSDLRenderer3_NewFrame();
-                c.cImGui_ImplSDL3_NewFrame();
-                c.ImGui_NewFrame();
-                //std.debug.print("{}\n", .{gameBoyState.registers});
-
-                _ = c.SDL_UpdateTexture(framebufferTexture, null, &gameBoyState.ppu.framebuffer, 160 * @sizeOf(ppu.RGBA));
-
-                _ = c.SDL_LockTexture(tileTexture, null, &tileBuffer, &tilePitch);
-                gameBoyState.ppu.debugTileset(@ptrCast(@alignCast(tileBuffer)));
-                _ = c.SDL_UnlockTexture(tileTexture);
-
-                _ = c.SDL_LockTexture(tilemapTexture, null, &tilemapBuffer, &tilemapPitch);
-                gameBoyState.ppu.debugTilemap(@ptrCast(@alignCast(tilemapBuffer)), ppu.Tilemap.T9800);
-                _ = c.SDL_UnlockTexture(tilemapTexture);
-
-                _ = c.SDL_LockTexture(tilemap2Texture, null, &tilemap2Buffer, &tilemap2Pitch);
-                gameBoyState.ppu.debugTilemap(@ptrCast(@alignCast(tilemap2Buffer)), ppu.Tilemap.T9C00);
-                _ = c.SDL_UnlockTexture(tilemap2Texture);
-
-                var windowFlags: c_int = c.ImGuiWindowFlags_MenuBar | c.ImGuiWindowFlags_NoDocking;
-                const viewport = c.ImGui_GetMainViewport();
-                c.ImGui_SetNextWindowPos(viewport.*.Pos, 0);
-                c.ImGui_SetNextWindowSize(viewport.*.Size, 0);
-                c.ImGui_PushStyleVar(c.ImGuiStyleVar_WindowRounding, 0.0);
-                c.ImGui_PushStyleVar(c.ImGuiStyleVar_WindowBorderSize, 0.0);
-                c.ImGui_PushStyleVarImVec2(c.ImGuiStyleVar_WindowPadding, c.ImVec2{ .x = 0.0, .y = 0.0 });
-                windowFlags |= c.ImGuiWindowFlags_NoTitleBar | c.ImGuiWindowFlags_NoCollapse | c.ImGuiWindowFlags_NoResize | c.ImGuiWindowFlags_NoMove;
-                windowFlags |= c.ImGuiWindowFlags_NoBringToFrontOnFocus | c.ImGuiWindowFlags_NoNavFocus;
-
-                _ = c.ImGui_Begin("ZigBoy", @ptrCast(@constCast(&true)), windowFlags);
-                c.ImGui_PopStyleVarEx(3);
-
-                const dockspaceId = c.ImGui_GetID("MyDockSpace");
-                _ = c.ImGui_DockSpaceEx(dockspaceId, c.ImVec2{ .x = 0.0, .y = 0.0 }, 0, 0);
-
-                const S = struct {
-                    var firstTime: bool = true;
-                };
-
-                if (S.firstTime) {
-                    S.firstTime = false;
-
-                    // c.ImGui_DockBuilderRemoveNode(dockspaceId); // clear any previous layout
-                    // _ = c.ImGui_DockBuilderAddNodeEx(dockspaceId, c.ImGuiDockNodeFlags_DockSpace);
-                    // c.ImGui_DockBuilderSetNodeSize(dockspaceId, viewport.*.Size);
-
-                    // split the dockspace into 2 nodes -- DockBuilderSplitNode takes in the following args in the following order
-                    //   window ID to split, direction, fraction (between 0 and 1), the final two setting let's us choose which id we want (which ever one we DON'T set as NULL, will be returned by the function)
-                    //                                                              out_id_at_dir is the id of the node in the direction we specified earlier, out_id_at_opposite_dir is in the opposite direction
-                    const dockIdRight = c.ImGui_DockBuilderSplitNode(dockspaceId, c.ImGuiDir_Left, 0.5, null, @ptrCast(@constCast(&dockspaceId)));
-                    const dockIdLeft = c.ImGui_DockBuilderSplitNode(dockspaceId, c.ImGuiDir_Left, 0.5, null, @ptrCast(@constCast(&dockspaceId)));
-
-                    // we now dock our windows into the docking node we made above
-                    c.ImGui_DockBuilderDockWindow("Display", dockIdLeft);
-                    c.ImGui_DockBuilderDockWindow("Debug", dockIdRight);
-                    c.ImGui_DockBuilderFinish(dockspaceId);
-                }
-
-                c.ImGui_End();
-
-                _ = c.ImGui_Begin("Display", null, 0);
-                var fit = fitAspect(@floatFromInt(framebufferTexture.*.w), @floatFromInt(framebufferTexture.*.h));
-                c.ImGui_Image(c.ImTextureRef{ ._TexID = @intFromPtr(framebufferTexture) }, c.ImVec2{ .x = fit.w, .y = fit.h });
-                c.ImGui_End();
-
-                // Memory TabBar
-                _ = c.ImGui_Begin("Debug", null, 0);
-                _ = c.ImGui_BeginChild("RegistersRow", c.ImVec2{ .x = 0, .y = 40 }, 0, 0);
-                c.ImGui_Text("A: 0x%02X", gameBoyState.cpu.*.registers.A);
-                c.ImGui_SameLine();
-                c.ImGui_Text("B: 0x%02X", gameBoyState.cpu.*.registers.B);
-                c.ImGui_SameLine();
-                c.ImGui_Text("C: 0x%02X", gameBoyState.cpu.*.registers.C);
-                c.ImGui_SameLine();
-                c.ImGui_Text("D: 0x%02X", gameBoyState.cpu.*.registers.D);
-                c.ImGui_SameLine();
-                c.ImGui_Text("E: 0x%02X", gameBoyState.cpu.*.registers.E);
-                c.ImGui_SameLine();
-                c.ImGui_Text("H: 0x%02X", gameBoyState.cpu.*.registers.H);
-                c.ImGui_SameLine();
-                c.ImGui_Text("L: 0x%02X", gameBoyState.cpu.*.registers.L);
-                c.ImGui_SameLine();
-                c.ImGui_Text("PC: 0x%04X", gameBoyState.cpu.*.registers.PC);
-                c.ImGui_SameLine();
-                c.ImGui_Text("SP: 0x%04X", gameBoyState.cpu.*.registers.SP);
-                c.ImGui_Text("LY: %u", gameBoyState.ppu.scanline.*);
-                c.ImGui_EndChild();
-                if (c.ImGui_BeginTabBar("DebugTabBar", 0)) {
-
-                    // Tile texture
-                    if (c.ImGui_BeginTabItem("VRAM", null, 0)) {
-                        fit = fitAspect(@floatFromInt(tileTexture.*.w), @floatFromInt(tileTexture.*.h));
-                        c.ImGui_Image(c.ImTextureRef{ ._TexID = @intFromPtr(tileTexture) }, c.ImVec2{ .x = fit.w, .y = fit.h });
-                        c.ImGui_EndTabItem();
-                    }
-
-                    // Tilemap texture
-                    if (c.ImGui_BeginTabItem("Tilemap", null, 0)) {
-                        fit = fitAspect(@floatFromInt(tilemapTexture.*.w), @floatFromInt(tilemapTexture.*.h));
-
-                        c.ImGui_Image(c.ImTextureRef{ ._TexID = @intFromPtr(tilemapTexture) }, c.ImVec2{ .x = fit.w, .y = fit.h });
-                        c.ImGui_EndTabItem();
-                    }
-
-                    // Tilemap texture
-                    if (c.ImGui_BeginTabItem("Tilemap2", null, 0)) {
-                        fit = fitAspect(@floatFromInt(tilemap2Texture.*.w), @floatFromInt(tilemap2Texture.*.h));
-
-                        c.ImGui_Image(c.ImTextureRef{ ._TexID = @intFromPtr(tilemap2Texture) }, c.ImVec2{ .x = fit.w, .y = fit.h });
-                        c.ImGui_EndTabItem();
-                    }
-
-                    c.ImGui_EndTabBar();
-                }
-                c.ImGui_End();
-
-                c.ImGui_Render();
-                const drawData: *c.ImDrawData = c.ImGui_GetDrawData();
-                const io = c.ImGui_GetIO();
-                _ = c.SDL_SetRenderScale(@ptrCast(mainRenderer), io.*.DisplayFramebufferScale.x, io.*.DisplayFramebufferScale.y);
-                _ = c.SDL_RenderClear(@ptrCast(mainRenderer));
-                c.cImGui_ImplSDLRenderer3_RenderDrawData(drawData, @ptrCast(mainRenderer));
-                _ = c.SDL_RenderPresent(@ptrCast(mainRenderer));
+                gui.draw();
 
                 lastFrameTime = c.SDL_GetTicks();
             }
