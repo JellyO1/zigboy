@@ -1,5 +1,6 @@
 const main = @import("main.zig");
 const cpu = @import("cpu.zig");
+const mmu = @import("mmu.zig");
 const std = @import("std");
 
 const TestFormat = struct {
@@ -53,9 +54,11 @@ pub fn runSingleTest(allocator: std.mem.Allocator, filename: []const u8) !void {
     defer json.deinit();
 
     for (json.value) |value| {
-        // std.log.warn("{s}\n", .{value.name});
+        std.log.warn("{s}\n", .{value.name});
 
-        var state = try main.GameBoyState.initTest(allocator, .{
+        var mmui = mmu.MMU.init(null, null);
+
+        var state = cpu.CPU.init(.{
             .A = value.initial.a,
             .B = value.initial.b,
             .C = value.initial.c,
@@ -63,42 +66,54 @@ pub fn runSingleTest(allocator: std.mem.Allocator, filename: []const u8) !void {
             .E = value.initial.e,
             .H = value.initial.h,
             .L = value.initial.l,
-            .F = cpu.Flags.init(.{ .C = (value.initial.f >> 4 & 1) != 0, .H = (value.initial.f >> 5 & 1) != 0, .N = (value.initial.f >> 6 & 1) != 0, .Z = (value.initial.f >> 7 & 1) != 0 }),
+            .F = cpu.Flags.init(.{ .C = (value.initial.f & 0x10) > 0, .H = (value.initial.f & 0x20) > 0, .N = (value.initial.f & 0x40) > 0, .Z = (value.initial.f & 0x80) > 0 }),
             .PC = value.initial.pc,
             .SP = value.initial.sp,
-        }, value.initial.ime == 1, false);
-        defer state.deinit();
+        }, &mmui, value.initial.ime == 1, null, false);
+        // var state = try main.GameBoyState.initTest(allocator, .{
+        //     .A = value.initial.a,
+        //     .B = value.initial.b,
+        //     .C = value.initial.c,
+        //     .D = value.initial.d,
+        //     .E = value.initial.e,
+        //     .H = value.initial.h,
+        //     .L = value.initial.l,
+        //     .F = cpu.Flags.init(.{ .C = (value.initial.f >> 4 & 1) != 0, .H = (value.initial.f >> 5 & 1) != 0, .N = (value.initial.f >> 6 & 1) != 0, .Z = (value.initial.f >> 7 & 1) != 0 }),
+        //     .PC = value.initial.pc,
+        //     .SP = value.initial.sp,
+        // }, value.initial.ime == 1, false);
+        // defer state.deinit();
 
-        const isDebug = std.mem.eql(u8, value.name, "AB 02A6");
+        const isDebug = std.mem.eql(u8, value.name, "30 023A");
 
         if (isDebug) {
-            std.log.warn("before: {any}\n", .{state.cpu.registers});
+            std.log.warn("before: {any}\n", .{state.registers});
         }
 
         for (value.initial.ram) |ram| {
             if (isDebug) {
-                std.log.warn("0x{X:4} {d}\n", .{ ram[0], ram[1] });
+                std.log.warn("0x{X:4} 0x{X:02}\n", .{ ram[0], ram[1] });
             }
             state.mmu.write(ram[0], ram[1]);
         }
 
-        state.step();
+        _ = state.step();
 
         if (isDebug) {
-            std.log.warn("after: {any}\n", .{state.cpu.registers});
+            std.log.warn("after: {any}\n", .{state.registers});
         }
 
-        try std.testing.expectEqual(value.final.pc, state.cpu.registers.PC);
-        try std.testing.expectEqual(value.final.sp, state.cpu.registers.SP);
-        try std.testing.expectEqual(value.final.a, state.cpu.registers.A);
-        try std.testing.expectEqual(value.final.b, state.cpu.registers.B);
-        try std.testing.expectEqual(value.final.c, state.cpu.registers.C);
-        try std.testing.expectEqual(value.final.d, state.cpu.registers.D);
-        try std.testing.expectEqual(value.final.e, state.cpu.registers.E);
-        try std.testing.expectEqual(value.final.h, state.cpu.registers.H);
-        try std.testing.expectEqual(value.final.l, state.cpu.registers.L);
-        try std.testing.expectEqual(value.final.ime == 1, state.cpu.ime);
-        try std.testing.expectEqual(value.final.ei == 1, state.cpu.ei_delay);
+        try std.testing.expectEqual(value.final.pc, state.registers.PC);
+        try std.testing.expectEqual(value.final.sp, state.registers.SP);
+        try std.testing.expectEqual(value.final.a, state.registers.A);
+        try std.testing.expectEqual(value.final.b, state.registers.B);
+        try std.testing.expectEqual(value.final.c, state.registers.C);
+        try std.testing.expectEqual(value.final.d, state.registers.D);
+        try std.testing.expectEqual(value.final.e, state.registers.E);
+        try std.testing.expectEqual(value.final.h, state.registers.H);
+        try std.testing.expectEqual(value.final.l, state.registers.L);
+        try std.testing.expectEqual(value.final.ime == 1, state.ime);
+        try std.testing.expectEqual(value.final.ei == 1, state.ei_delay);
 
         for (value.final.ram) |ram| {
             if (isDebug) {
