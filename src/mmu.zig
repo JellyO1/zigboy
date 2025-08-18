@@ -114,9 +114,8 @@ pub const MMU = struct {
     echo_ram: [0x2000]u8,
     // Object Attribute Memory (OAM) sprite RAM
     oam: [0xA0]u8,
-    // oam: [0x100]u8,
     // Not usable
-    // unused: [0x60]u8,
+    unused: [0x60]u8,
     // IO registers
     joypad: Joypad,
     io_registers: [0x7F]u8,
@@ -140,6 +139,7 @@ pub const MMU = struct {
             .work_ram = std.mem.zeroes([0x2000]u8),
             .echo_ram = std.mem.zeroes([0x2000]u8),
             .oam = std.mem.zeroes([0xA0]u8),
+            .unused = std.mem.zeroes([0x60]u8),
             .joypad = Joypad{},
             .io_registers = std.mem.zeroes([0x7F]u8),
             .hram = std.mem.zeroes([0x7F]u8),
@@ -164,8 +164,7 @@ pub const MMU = struct {
             0xC000...0xDFFF => self.work_ram[addr - 0xC000],
             0xE000...0xFDFF => self.echo_ram[addr - 0xE000],
             0xFE00...0xFE9F => self.oam[addr - 0xFE00],
-            0xFEA0...0xFEFF => 0x00, // Not Usable
-            // 0xFE00...0xFEFF => self.oam[addr - 0xFE00],
+            0xFEA0...0xFEFF => self.unused[addr - 0xFEA0], // Not Usable
             0xFF00 => self.joypad.read(),
             0xFF01...0xFF7F => self.io_registers[addr - 0xFF01],
             0xFF80...0xFFFE => self.hram[addr - 0xFF80],
@@ -188,7 +187,7 @@ pub const MMU = struct {
             0xC000...0xDFFF => &self.work_ram[addr - 0xC000],
             0xE000...0xFDFF => &self.echo_ram[addr - 0xE000],
             0xFE00...0xFE9F => &self.oam[addr - 0xFE00],
-            0xFEA0...0xFEFF => @constCast(&@as(u8, 0x00)), // Not Usable
+            0xFEA0...0xFEFF => &self.unused[addr - 0xFEA0], // Not Usable// Not Usable
             // 0xFE00...0xFEFF => &self.oam[addr - 0xFE00],
             0xFF00 => @ptrCast(&self.joypad),
             0xFF01...0xFF7F => &self.io_registers[addr - 0xFF01],
@@ -266,8 +265,7 @@ pub const MMU = struct {
             },
             0xE000...0xFDFF => self.echo_ram[addr - 0xE000] = value,
             0xFE00...0xFE9F => self.oam[addr - 0xFE00] = value,
-            0xFEA0...0xFEFF => {}, // Not Usable
-            // 0xFE00...0xFEFF => self.oam[addr - 0xFE00] = value,
+            0xFEA0...0xFEFF => self.unused[addr - 0xFEA0] = value, // Not Usable
             0xFF00 => self.joypad.write(value),
             0xFF01...0xFF7F => {
                 const start_addr = 0xFF01;
