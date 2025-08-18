@@ -416,26 +416,30 @@ pub const PPU = struct {
 
                 // posX is hardware offset by +8 so the screenX is actually posX - 8
                 var pixelX: u8 = @intCast((x - (obj.posX - 8)) % 8);
-                var pixelY: u8 = self.scanline.* % 8;
+                var pixelY: u8 = self.scanline.* -% obj.posY +% 16;
 
                 var tileIndex: u8 = obj.tileIndex;
 
                 // Is it an 8x16 object?
                 if (self.lcdc.ObjSize) {
                     tileIndex = self.getSpriteTileIndex(obj);
-                } else {
-                    // Flip pixels if necessary
-                    pixelY = if (obj.attributes.YFlip) 7 - pixelY else pixelY;
-                    pixelX = if (obj.attributes.XFlip) 7 - pixelX else pixelX;
+                }
+
+                // Flip pixels if necessary
+                pixelX = if (obj.attributes.XFlip) 7 - pixelX else pixelX;
+                if (obj.attributes.YFlip) {
+                    const height: u8 = if (self.lcdc.ObjSize) 15 else 7;
+                    pixelY = height - pixelY;
                 }
 
                 const tile = self.mmu.tileset[tileIndex];
-                const color = tile.data[pixelY][pixelX];
+                const color = tile.data[pixelY % 8][pixelX];
+
+                // Color index 0 is transparent for sprites
+                if (color == 0) continue;
+
                 const palette = if (obj.attributes.DMGPalette) self.op1 else self.op0;
                 const colorValue = palette.get(color);
-
-                // On objects the last two bits are transparent
-                if (colorValue == Color.White) continue;
 
                 const framebufferIndex = xu8 + @as(usize, @intCast((self.scanline.*))) * 160;
 
