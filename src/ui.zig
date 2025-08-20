@@ -108,7 +108,8 @@ pub const UI = struct {
     fn drawVRAMViewer(self: *UI, ppu: *PPU, open: *bool) void {
         // NOTE: I know this is code-smell but it's fine for now since I might split this into it's own 'view' later
         const S = struct {
-            var tilemap: ppui.Tilemap = ppui.Tilemap.T9800;
+            var tilemap: ppui.Tilemap = ppui.Tilemap.Auto;
+            var tileDataArea: ppui.TileDataArea = ppui.TileDataArea.Auto;
         };
 
         if (c.ImGui_Begin("VRAM Viewer", open, c.ImGuiWindowFlags_None)) {
@@ -116,14 +117,19 @@ pub const UI = struct {
                 // BG texture
                 if (c.ImGui_BeginTabItem("BG", null, c.ImGuiTabItemFlags_None)) {
                     _ = c.SDL_LockTexture(self.tilemapTexture, null, &self.tilemapBuffer, &self.tilemapPitch);
-                    ppu.debugTilemap(@ptrCast(@alignCast(self.tilemapBuffer)), S.tilemap);
+                    ppu.debugTilemap(@ptrCast(@alignCast(self.tilemapBuffer)), S.tilemap, S.tileDataArea);
                     _ = c.SDL_UnlockTexture(self.tilemapTexture);
 
                     const fit = fitAspect(@floatFromInt(self.tilemapTexture.*.w), @floatFromInt(self.tilemapTexture.*.h));
                     c.ImGui_Image(c.ImTextureRef{ ._TexID = @intFromPtr(self.tilemapTexture) }, c.ImVec2{ .x = fit.w, .y = fit.h });
 
-                    if (c.ImGui_BeginChild("Options", c.ImVec2{ .x = 0, .y = 0 }, c.ImGuiChildFlags_AlwaysAutoResize | c.ImGuiChildFlags_AutoResizeX | c.ImGuiChildFlags_AutoResizeY, c.ImGuiWindowFlags_None)) {
+                    if (c.ImGui_BeginChild("MapOptions", c.ImVec2{ .x = 0, .y = 0 }, c.ImGuiChildFlags_AlwaysAutoResize | c.ImGuiChildFlags_AutoResizeX | c.ImGuiChildFlags_AutoResizeY, c.ImGuiWindowFlags_None)) {
                         c.ImGui_Text("Map");
+                        c.ImGui_SameLine();
+
+                        if (c.ImGui_RadioButton("Auto", S.tilemap == ppui.Tilemap.Auto)) {
+                            S.tilemap = ppui.Tilemap.Auto;
+                        }
                         c.ImGui_SameLine();
 
                         if (c.ImGui_RadioButton("9800", S.tilemap == ppui.Tilemap.T9800)) {
@@ -133,6 +139,27 @@ pub const UI = struct {
                         c.ImGui_SameLine();
                         if (c.ImGui_RadioButton("9C00", S.tilemap == ppui.Tilemap.T9C00)) {
                             S.tilemap = ppui.Tilemap.T9C00;
+                        }
+
+                        c.ImGui_EndChild();
+                    }
+
+                    if (c.ImGui_BeginChild("AreaOptions", c.ImVec2{ .x = 0, .y = 0 }, c.ImGuiChildFlags_AlwaysAutoResize | c.ImGuiChildFlags_AutoResizeX | c.ImGuiChildFlags_AutoResizeY, c.ImGuiWindowFlags_None)) {
+                        c.ImGui_Text("Area");
+                        c.ImGui_SameLine();
+
+                        if (c.ImGui_RadioButton("Auto", S.tileDataArea == ppui.TileDataArea.Auto)) {
+                            S.tileDataArea = ppui.TileDataArea.Auto;
+                        }
+                        c.ImGui_SameLine();
+
+                        if (c.ImGui_RadioButton("8000", S.tileDataArea == ppui.TileDataArea.T8000)) {
+                            S.tileDataArea = ppui.TileDataArea.T8000;
+                        }
+
+                        c.ImGui_SameLine();
+                        if (c.ImGui_RadioButton("8800", S.tileDataArea == ppui.TileDataArea.T8800)) {
+                            S.tileDataArea = ppui.TileDataArea.T8800;
                         }
 
                         c.ImGui_EndChild();
