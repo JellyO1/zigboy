@@ -266,30 +266,37 @@ pub const PPU = struct {
         }
     }
 
+    /// Scans the OAM (Object Attribute Memory) to find up to 10 sprites
+    /// that are visible on the current scanline.
     fn OAMScan(self: *PPU) void {
-        // clear old scanline selection
+        // Clear the list of objects from the previous scanline.
         self.objects.clearRetainingCapacity();
 
+        // Iterate through all 40 possible objects in OAM.
         for (0..40) |index| {
             const obj = self.mmu.readObj(@intCast(index));
 
-            // If this object is not in the current scanline ignore
-            if (self.scanline.* + 16 < obj.posY or self.scanline.* >= obj.posY) continue;
+            // Determine the sprite's vertical position and height.
+            // Y is offset by -16 and X by -8 in hardware.
+            const screenY: i16 = @as(i16, obj.posY) - 16;
+            const height: u8 = if (self.lcdc.ObjSize) 16 else 8;
 
-            // std.log.info("{}", .{obj});
+            // Check if the sprite is vertically visible on the current scanline.
+            if (@as(i16, self.scanline.*) < screenY or @as(i16, self.scanline.*) >= screenY + height) continue;
+
+            // Add the visible object to the list for rendering.
             self.objects.append(obj) catch |err| std.debug.panic("{}", .{err});
 
-            // Only select 10 objects per line.
+            // The PPU can only render a maximum of 10 sprites per scanline.
             if (self.objects.items.len == 10) {
                 return;
             }
         }
 
-        // Sort objects by priority.
+        // Sort the visible objects by priority.
+        // Lower X-coordinate has higher priority.
+        // If X-coordinates are equal, the one that appeared first in OAM has higher priority.
         std.mem.sort(Object, self.objects.items, {}, compareObjects);
-
-        // std.log.info("{}", .{self.objects});
-        // std.debug.panic("", .{});
     }
 
     /// The smaller the X coordinate, the higher the priority. When X coordinates are
