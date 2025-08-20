@@ -409,6 +409,7 @@ pub const PPU = struct {
         }
     }
 
+    /// Renders the sprites that have been selected by OAMScan for the current scanline.
     fn renderObjects(self: *PPU, x: usize) void {
         const xu8: u8 = @intCast(x);
 
@@ -416,36 +417,43 @@ pub const PPU = struct {
             // Draw back to front to preserve priority
             var it = std.mem.reverseIterator(self.objects.items);
             while (it.next()) |obj| {
-                // If this is 8x8 and we've already drawn everything go to the next obj
-                if (!self.lcdc.ObjSize and self.scanline.* >= obj.posY - 8) continue;
+                // Y is offset by -16 and X by -8 in hardware.
+                const screenX: i16 = @as(i16, obj.posX) - 8;
+                const screenY: i16 = @as(i16, obj.posY) - 16;
+                const height: u8 = if (self.lcdc.ObjSize) 16 else 8;
 
-                if (x + 8 < obj.posX or x >= obj.posX) continue;
-                // std.log.info("ly: {}, lx: {}, {}", .{ self.scanline.*, xu8, obj });
+                // Filter out pixels of the sprite that are not at the current X coordinate.
+                if (@as(i16, xu8) < screenX or @as(i16, xu8) >= screenX + 8) continue;
 
-                // posX is hardware offset by +8 so the screenX is actually posX - 8
-                var pixelX: u8 = @intCast((x - (obj.posX - 8)) % 8);
-                var pixelY: u8 = self.scanline.* -% obj.posY +% 16;
+                // Calculate the pixel's X and Y coordinate within the sprite's 8x8 or 8x16 frame.
+                var pixelX: u8 = @intCast(@as(i16, xu8) - screenX);
+                var pixelY: u8 = @intCast(@as(i16, self.scanline.*) - screenY);
 
                 var tileIndex: u8 = obj.tileIndex;
 
-                // Is it an 8x16 object?
+                // For 8x16 sprites, we need to select the correct tile from the pair.
                 if (self.lcdc.ObjSize) {
-                    tileIndex = self.getSpriteTileIndex(obj);
+                    tileIndex = getSpriteTileIndex(obj, pixelY);
                 }
 
-                // Flip pixels if necessary
-                pixelX = if (obj.attributes.XFlip) 7 - pixelX else pixelX;
+                // Handle horizontal and vertical flipping of the sprite.
+                if (obj.attributes.XFlip) {
+                    pixelX = 7 - pixelX;
+                }
                 if (obj.attributes.YFlip) {
-                    const height: u8 = if (self.lcdc.ObjSize) 15 else 7;
-                    pixelY = height - pixelY;
+                    pixelY = height - 1 - pixelY;
                 }
 
+                // Get the tile from the tileset.
                 const tile = self.mmu.tileset[tileIndex];
+                // Get the color index for the pixel from the tile data.
+                // For 8x16 sprites, pixelY can be > 7, so we use modulo 8.
                 const color = tile.data[pixelY % 8][pixelX];
 
-                // Color index 0 is transparent for sprites
+                // Color index 0 is transparent for sprites.
                 if (color == 0) continue;
 
+                // Get the actual color from the palette.
                 const palette = if (obj.attributes.DMGPalette) self.op1 else self.op0;
                 const colorValue = palette.get(color);
 
@@ -453,8 +461,10 @@ pub const PPU = struct {
 
                 const bgColor = self.framebuffer[framebufferIndex];
 
-                // Handle sprite priority: if Priority=1, sprite only draws over white
-                // if Priority=0, sprite always draws over background
+                // Handle sprite-to-background priority.
+                // If the priority bit is 0, the sprite always appears on top of the background.
+                // If the priority bit is 1, the sprite is behind the background and window,
+                // unless the background color is white (color 0).
                 if (!obj.attributes.Priority or bgColor == BGPaletteColors[@intFromEnum(Color.White)]) {
                     self.framebuffer[framebufferIndex] = OBJPaletteColors[@intFromEnum(colorValue)];
                 }
@@ -470,14 +480,28 @@ pub const PPU = struct {
     }
 
     /// Returns the correct tile index for 8x16 sprites based on Y-flip and scanline position
-    fn getSpriteTileIndex(self: *PPU, obj: Object) u8 {
-        const isInUpperHalf = self.scanline.* < obj.posY - 8;
-        const flipTiles = if (obj.attributes.YFlip) isInUpperHalf else !isInUpperHalf;
+    fn getSpriteTileIndex(obj: Object, pixelY: u8) u8 {
+        const bottomTileIndex = obj.tileIndex | 0x01;
+        const topTileIndex = obj.tileIndex & 0xFE;
 
-        return if (flipTiles)
-            obj.tileIndex | 0x01
-        else
-            obj.tileIndex & 0xFE;
+        // For 8x16 sprites, the tile index is determined by the Y position
+        // and whether the sprite is flipped vertically.
+        if (obj.attributes.YFlip) {
+            // For a flipped sprite, the top half of the screen pixels
+            // correspond to the bottom tile, and vice-versa.
+            if (pixelY < 8) {
+                return bottomTileIndex;
+            } else {
+                return topTileIndex;
+            }
+        } else {
+            // For a normal sprite, the top half corresponds to the top tile.
+            if (pixelY < 8) {
+                return topTileIndex;
+            } else {
+                return bottomTileIndex;
+            }
+        }
     }
 
     pub fn debugTileset(state: *PPU, buffer: *[128 * 192]RGBA) void {
