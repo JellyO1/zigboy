@@ -177,7 +177,7 @@ pub const Registers = struct {
             self.getWord(Word.HL),
             self.SP,
             self.PC,
-            self.F,
+            &self.F,
         });
     }
 };

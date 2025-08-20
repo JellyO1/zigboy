@@ -298,7 +298,7 @@ pub const MMU = struct {
                 }
 
                 if (addr == BOOT_ROM_ENABLE_ADDR) {
-                    self.boot_rom_enabled = value == 0x01; // 0x01 = Boot ROM enabled, 0x00 = Boot ROM disabled
+                    self.boot_rom_enabled = value != 0x01; // 0x01 = Boot ROM disabled
                 }
             },
             0xFF80...0xFFFE => self.hram[addr - 0xFF80] = value,

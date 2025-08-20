@@ -154,6 +154,11 @@ pub const PPU = struct {
         const lcdc: *LCDControl = @ptrCast(mmu.readPtr(mmuz.MMU.LCDC_ADDR));
         const objects = std.ArrayList(Object).initCapacity(allocator, 10) catch |err| std.debug.panic("{}", .{err});
 
+        // Default state after boot_rom
+        lcdc.BgTileMapArea = true;
+        lcdc.BgWinEnable = true;
+        lcdc.LcdPpuEnable = true;
+
         return .{
             .mode = Mode.OAM,
             .mmu = mmu,
@@ -182,7 +187,7 @@ pub const PPU = struct {
 
     pub fn step(self: *PPU, tCycles: u32) void {
         if (!self.lcdc.LcdPpuEnable) {
-            self.modeClock += tCycles;
+            // self.modeClock += tCycles;
             self.scanline.* = 0;
 
             self.stat.Mode = .HBlank;
