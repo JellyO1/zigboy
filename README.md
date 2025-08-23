@@ -9,8 +9,9 @@ This is a hobby project of mine to learn the [Zig programming language](https://
 - [x] PPU
 - [x] Timer
 - [x] MBC1
-- [ ] MBC2
-- [ ] MBC5
+- [x] MBC2
+- [x] MBC3 (No RTC)
+- [x] MBC5
 - [ ] Save/load states
 - [ ] Audio
 - [ ] Debugger
