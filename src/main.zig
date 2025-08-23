@@ -154,6 +154,19 @@ pub const Emulator = struct {
         self.timer.step(ticks);
     }
 
+    pub fn runFrame(self: *Emulator) void {
+        const zone = tracy.beginZone(@src(), .{ .name = "Emu.runFrame" });
+        defer zone.end();
+
+        const CYCLES_PER_FRAME = 70224; // Game Boy cycles per frame (4.194304 MHz / 59.7 Hz)
+
+        while (self.cycles < CYCLES_PER_FRAME) {
+            self.step();
+        }
+
+        self.cycles -= CYCLES_PER_FRAME;
+    }
+
     pub fn keyPress(self: *Emulator, key: c.SDL_Keycode, down: bool) void {
         const joypad: *mmu.Joypad = @ptrCast(self.mmu.readPtr(mmu.MMU.JOYP_ADDR));
 
@@ -240,7 +253,7 @@ pub fn main() !void {
 
         const TARGET_FPS = 59.7;
         const FRAME_TIME_MS: f64 = 1000.0 / TARGET_FPS; // ~16.75 ms per frame
-        const CYCLES_PER_FRAME = 70224; // Game Boy cycles per frame (4.194304 MHz / 59.7 Hz)
+        // const CYCLES_PER_FRAME = 70224; // Game Boy cycles per frame (4.194304 MHz / 59.7 Hz)
 
         var lastFrameTime = c.SDL_GetTicks();
 
@@ -248,6 +261,7 @@ pub fn main() !void {
             events.clearRetainingCapacity();
 
             var ev: c.SDL_Event = undefined;
+            // poll for events while waiting for frame time
             while (c.SDL_PollEvent(&ev)) {
                 _ = c.cImGui_ImplSDL3_ProcessEvent(&ev);
                 switch (ev.type) {
@@ -260,23 +274,19 @@ pub fn main() !void {
                 }
             }
 
-            if (emulator.cycles >= CYCLES_PER_FRAME) {
-                emulator.cycles -= CYCLES_PER_FRAME;
+            emulator.runFrame();
 
-                const currentTime = c.SDL_GetTicks();
-                const frameTime: f64 = @floatFromInt(currentTime - lastFrameTime);
-
-                // delay to keep steady fps
-                if (frameTime < FRAME_TIME_MS) {
-                    const delayTime: u32 = @intFromFloat(FRAME_TIME_MS - frameTime);
-                    c.SDL_Delay(delayTime);
-                    // std.debug.print("slept for {d} ms", .{delayTime});
-                }
-
-                gui.draw();
-
-                lastFrameTime = c.SDL_GetTicks();
+            const currentTime = c.SDL_GetTicks();
+            const frameTime: f64 = @floatFromInt(currentTime - lastFrameTime);
+            // delay to keep steady fps
+            if (frameTime < FRAME_TIME_MS) {
+                const delayTime: u32 = @intFromFloat(FRAME_TIME_MS - frameTime);
+                c.SDL_Delay(delayTime);
             }
+
+            gui.draw();
+
+            lastFrameTime = c.SDL_GetTicks();
 
             // UI events
             for (events.items) |event| {
@@ -287,8 +297,6 @@ pub fn main() !void {
                     },
                 }
             }
-
-            emulator.step();
         }
     }
 }

@@ -187,7 +187,6 @@ pub const PPU = struct {
 
     pub fn step(self: *PPU, tCycles: u32) void {
         if (!self.lcdc.LcdPpuEnable) {
-            // self.modeClock += tCycles;
             self.scanline.* = 0;
 
             self.stat.Mode = .HBlank;
@@ -195,76 +194,73 @@ pub const PPU = struct {
             return;
         }
 
-        for (0..tCycles) |_| {
-            self.modeClock += 1;
+        self.modeClock += tCycles;
 
+        // Loop until the modeClock is smaller than the mode we're in requires
+        while (true) {
             switch (self.mode) {
                 .OAM => {
-                    if (self.modeClock % 80 == 0) {
-                        self.modeClock = 0;
-                        self.OAMScan();
-                        self.mode = .Drawing;
-                        self.stat.Mode = self.mode;
-                    }
+                    if (self.modeClock < 80) break;
+                    self.modeClock -= 80;
+                    self.OAMScan();
+                    self.mode = .Drawing;
+                    self.stat.Mode = self.mode;
                 },
                 .Drawing => {
-                    if (self.modeClock % 172 == 0) {
-                        self.modeClock = 0;
+                    if (self.modeClock < 172) break;
+                    self.modeClock -= 172;
 
-                        self.renderScanline();
+                    self.renderScanline();
 
-                        self.mode = .HBlank;
+                    self.mode = .HBlank;
+                    self.stat.Mode = self.mode;
+
+                    if (self.stat.Mode0) {
+                        self.IF.LCD = true;
+                    }
+                },
+                .HBlank => {
+                    if (self.modeClock < 204) break;
+                    self.modeClock -= 204;
+                    self.scanline.* +%= 1;
+
+                    self.setLYCEqualsLY();
+
+                    if (self.scanline.* == 144) {
+                        self.mode = .VBlank;
                         self.stat.Mode = self.mode;
 
-                        if (self.stat.Mode0) {
+                        if (self.stat.Mode1) {
+                            self.IF.LCD = true;
+                        }
+
+                        self.IF.VBlank = true;
+                    } else {
+                        self.mode = .OAM;
+                        self.stat.Mode = self.mode;
+
+                        if (self.stat.Mode2) {
                             self.IF.LCD = true;
                         }
                     }
                 },
-                .HBlank => {
-                    if (self.modeClock % 204 == 0) {
-                        self.modeClock = 0;
-                        self.scanline.* +%= 1;
-
-                        self.setLYCEqualsLY();
-
-                        if (self.scanline.* == 144) {
-                            self.mode = .VBlank;
-                            self.stat.Mode = self.mode;
-
-                            if (self.stat.Mode1) {
-                                self.IF.LCD = true;
-                            }
-
-                            self.IF.VBlank = true;
-                        } else {
-                            self.mode = .OAM;
-                            self.stat.Mode = self.mode;
-
-                            if (self.stat.Mode2) {
-                                self.IF.LCD = true;
-                            }
-                        }
-                    }
-                },
                 .VBlank => {
-                    if (self.modeClock % 456 == 0) {
-                        self.modeClock = 0;
-                        self.scanline.* +%= 1;
+                    if (self.modeClock < 456) break;
+                    self.modeClock -= 456;
+                    self.scanline.* +%= 1;
 
-                        self.setLYCEqualsLY();
+                    self.setLYCEqualsLY();
 
-                        if (self.scanline.* == 154) {
-                            self.mode = .OAM;
-                            self.stat.Mode = self.mode;
+                    if (self.scanline.* == 154) {
+                        self.mode = .OAM;
+                        self.stat.Mode = self.mode;
 
-                            if (self.stat.Mode2) {
-                                self.IF.LCD = true;
-                            }
-
-                            self.scanline.* = 0;
-                            self.winLY = 0;
+                        if (self.stat.Mode2) {
+                            self.IF.LCD = true;
                         }
+
+                        self.scanline.* = 0;
+                        self.winLY = 0;
                     }
                 },
             }

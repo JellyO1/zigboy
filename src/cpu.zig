@@ -139,12 +139,7 @@ pub const Registers = struct {
         switch (word) {
             Word.AF => {
                 self.A = @intCast((value >> 8) & 0xFF);
-                self.F = Flags.init(.{
-                    .C = (value & 0b00010000) != 0, // bit 4
-                    .H = (value & 0b00100000) != 0, // bit 5
-                    .N = (value & 0b01000000) != 0, // bit 6
-                    .Z = (value & 0b10000000) != 0, // bit 7
-                });
+                self.F = @bitCast(@as(u8, @truncate(value)) & 0xF0);
             },
             Word.BC => {
                 self.B = @intCast((value >> 8) & 0xFF);
@@ -195,6 +190,9 @@ pub const CPU = struct {
     halt: bool,
     dma_cycles: u32,
 
+    ie_ptr: *const u8,
+    if_ptr: *const u8,
+
     // If we should log the opcodes to a file
     logExecutionToFile: bool,
     debugFile: std.fs.File,
@@ -215,6 +213,8 @@ pub const CPU = struct {
             .debugFile = debugFile,
             .allocator = allocator,
             .logExecutionToFile = logToFile orelse false,
+            .ie_ptr = mmu.readPtr(mmuz.MMU.IE_ADDR),
+            .if_ptr = mmu.readPtr(mmuz.MMU.IF_ADDR),
         };
     }
 
@@ -792,7 +792,7 @@ pub const CPU = struct {
 
     fn checkInterrups(self: *CPU) u32 {
         var ticks: u32 = 0;
-        const pending: u8 = self.mmu.read(mmuz.MMU.IE_ADDR) & self.mmu.read(mmuz.MMU.IF_ADDR) & 0x1F;
+        const pending: u8 = self.ie_ptr.* & self.if_ptr.* & 0x1F;
         if (pending != 0) {
             // Interrupt halt if there's an interrupt pending
             if (self.halt) {
@@ -801,7 +801,7 @@ pub const CPU = struct {
 
             // Handle interrupts if IME is enabled
             if (self.ime) {
-                const IF: *mmuz.InterruptFlags = @ptrCast(self.mmu.readPtr(mmuz.MMU.IF_ADDR));
+                const IF: *mmuz.InterruptFlags = @constCast(@ptrCast(self.if_ptr));
 
                 if (IF.VBlank and self.mmu.ie_register.VBlank) {
                     self.ime = false;
