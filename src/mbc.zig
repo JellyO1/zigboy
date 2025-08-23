@@ -162,7 +162,32 @@ pub const CartridgeHeader = struct {
     }
 };
 
-pub const MBC = struct {
+pub const MBC = union(enum) {
+    mbc1: MBC1,
+    mbc2: MBC2,
+    mbc3: MBC3,
+    mbc5: MBC5,
+
+    pub fn deinit(self: *MBC) void {
+        switch (self.*) {
+            inline else => |*mbc| mbc.deinit(),
+        }
+    }
+
+    pub fn read(self: *MBC, addr: u16) u8 {
+        return switch (self.*) {
+            inline else => |*mbc| mbc.read(addr),
+        };
+    }
+
+    pub fn write(self: *MBC, addr: u16, value: u8) void {
+        switch (self.*) {
+            inline else => |*mbc| mbc.write(addr, value),
+        }
+    }
+};
+
+pub const MBC1 = struct {
     cartridge_header: CartridgeHeader,
 
     /// Any write with a value of $A in the lower nibble
@@ -194,7 +219,7 @@ pub const MBC = struct {
 
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, game_rom: ?[]const u8) !MBC {
+    pub fn init(allocator: std.mem.Allocator, game_rom: ?[]const u8) !MBC1 {
         var header = CartridgeHeader.empty();
         var external_ram: ?[]u8 = null;
 
@@ -222,43 +247,22 @@ pub const MBC = struct {
         };
     }
 
-    pub fn deinit(self: *MBC) void {
-        self.trySave();
+    pub fn deinit(self: *MBC1) void {
+        if (self.external_ram) |ram| {
+            switch (self.cartridge_header.ctype) {
+                CartridgeHeader.Type.MBC1_RAM_BATTERY,
+                => trySave(
+                    self.cartridge_header.getTitle(),
+                    ram[0..],
+                ),
+                else => {},
+            }
 
-        if (self.external_ram != null) self.allocator.free(self.external_ram.?);
-    }
-
-    /// If it there's external RAM it saves it to a file with the ROM title
-    fn trySave(self: *MBC) void {
-        if (self.external_ram == null) return;
-
-        switch (self.cartridge_header.ctype) {
-            CartridgeHeader.Type.MBC1_RAM,
-            CartridgeHeader.Type.MBC1_RAM_BATTERY,
-            CartridgeHeader.Type.MBC3_RAM,
-            CartridgeHeader.Type.MBC3_RAM_BATTERY,
-            CartridgeHeader.Type.MBC3_TIMER_RAM_BATTERY,
-            CartridgeHeader.Type.MBC5_RAM,
-            CartridgeHeader.Type.MBC5_RAM_BATTERY,
-            CartridgeHeader.Type.MBC5_RUMBLE_RAM,
-            CartridgeHeader.Type.MBC5_RUMBLE_RAM_BATTERY,
-            CartridgeHeader.Type.MBC7_SENSOR_RUMBLE_RAM_BATTERY,
-            CartridgeHeader.Type.MMM01_RAM,
-            CartridgeHeader.Type.MMM01_RAM_BATTERY,
-            CartridgeHeader.Type.ROM_RAM,
-            CartridgeHeader.Type.ROM_RAM_BATTERY,
-            CartridgeHeader.Type.HuC1_RAM_BATTERY,
-            => {
-                if (std.fs.cwd().createFile(self.cartridge_header.getTitle(), .{})) |file| {
-                    file.writeAll(self.external_ram.?) catch {};
-                } else |_| {}
-            },
-            // no op
-            else => {},
+            self.allocator.free(ram);
         }
     }
 
-    pub fn read(self: *MBC, addr: u16) u8 {
+    pub fn read(self: *MBC1, addr: u16) u8 {
         return switch (addr) {
             0x0000...0x3FFF => {
                 if (self.game_rom == null) return 0xFF;
@@ -314,7 +318,7 @@ pub const MBC = struct {
         };
     }
 
-    pub fn write(self: *MBC, addr: u16, value: u8) void {
+    pub fn write(self: *MBC1, addr: u16, value: u8) void {
         switch (addr) {
             0x0000...0x1FFF => self.ram_enable = @as(u4, @truncate(value)) == 0xA,
             0x2000...0x3FFF => {
@@ -347,24 +351,358 @@ pub const MBC = struct {
             else => {},
         }
     }
+};
 
-    pub fn printInfo(self: *MBC) void {
-        const ramSize = self.cartridge_header.getRAMSize();
-        const ramBanks = self.cartridge_header.getRAMBankCount();
-        const romSize = self.cartridge_header.getROMSize();
-        const romBanks = self.cartridge_header.getROMBankCount();
-        std.log.debug("{}, RAM:{} bytes | {} banks, ROM:{} bytes | {} banks", .{ self.cartridge_header.ctype, ramSize, ramBanks, romSize, romBanks });
+pub const MBC2 = struct {
+    cartridge_header: CartridgeHeader,
+
+    /// Writes when the 8th bit of the addr is __clear__ with a value of $A in
+    /// the lower nibble to the range 0000-3FFF enables the RAM.
+    ram_enable: bool,
+
+    /// Writes when the 8th bit of the addr is __set__ to the range 0000-3FFF
+    /// selects the ROM bank for the region 4000-7FFF.
+    /// If $00 is written to this, it defaults to $01
+    rom_bank_number: u4,
+
+    game_rom: ?[]const u8,
+
+    // MBC2 actually has inbuilt 512 half-byte ram but for us it's the same
+    external_ram: ?[]u8,
+
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, game_rom: ?[]const u8) !MBC2 {
+        var header = CartridgeHeader.empty();
+        var external_ram: ?[]u8 = null;
+
+        if (game_rom) |gr| {
+            header = try CartridgeHeader.init(gr);
+
+            if (std.fs.cwd().openFile(header.getTitle(), .{})) |file| {
+                // Load the previous state before the emulator was closed
+                external_ram = try file.readToEndAlloc(allocator, 512);
+            } else |_| {
+                // Assume there's no previous state even if it's some other error
+                external_ram = try allocator.alloc(u8, 512);
+            }
+        }
+
+        return .{
+            .cartridge_header = header,
+            .ram_enable = false,
+            .rom_bank_number = 1,
+            .game_rom = game_rom,
+            .external_ram = external_ram,
+            .allocator = allocator,
+        };
     }
 
-    pub fn dumpLogo(self: *MBC) !void {
-        const logoFile = try std.fs.cwd().createFile("logo.dump", std.fs.File.CreateFlags{ .read = true });
+    pub fn deinit(self: *MBC2) void {
+        if (self.external_ram) |ram| {
+            switch (self.cartridge_header.ctype) {
+                CartridgeHeader.Type.MBC2_BATTERY,
+                => trySave(
+                    self.cartridge_header.getTitle(),
+                    ram[0..],
+                ),
+                else => {},
+            }
 
-        const logo = try std.fmt.allocPrint(
-            self.allocator,
-            "{s}",
-            .{self.cartridge_header.logo},
-        );
-        defer self.allocator.free(logo);
-        try logoFile.writeAll(logo);
+            self.allocator.free(ram);
+        }
+    }
+
+    pub fn read(self: *MBC2, addr: u16) u8 {
+        return switch (addr) {
+            0x0000...0x3FFF => {
+                if (self.game_rom == null) return 0xFF;
+                return self.game_rom.?[addr];
+            },
+            0x4000...0x7FFF => {
+                if (self.game_rom == null) return 0xFF;
+
+                const normAddr = addr - 0x4000;
+                const baseAddr = 0x4000 * @as(usize, self.rom_bank_number);
+                return self.game_rom.?[baseAddr + normAddr];
+            },
+            0xA000...0xBFFF => {
+                if (!self.ram_enable) return 0xFF;
+
+                const normAddr = addr - 0xA000;
+
+                // The upper nibble is always 0xF
+                return self.external_ram.?[normAddr & 0x1FF] | 0xF0;
+            },
+            else => 0xFF,
+        };
+    }
+
+    pub fn write(self: *MBC2, addr: u16, value: u8) void {
+        switch (addr) {
+            0x0000...0x3FFF => {
+                // 0 is ram mode, 1 is rom bank mode
+                const mode: u1 = @truncate((addr >> 8));
+
+                if (mode == 0) {
+                    self.ram_enable = @as(u4, @truncate(value)) == 0xA;
+                } else {
+                    self.rom_bank_number = @truncate(value);
+                    if (self.rom_bank_number == 0) self.rom_bank_number = 1;
+                }
+            },
+            0xA000...0xBFFF => {
+                if (!self.ram_enable) return;
+
+                const normAddr = addr - 0xA000;
+                self.external_ram.?[normAddr & 0x1FF] = value;
+            },
+            else => {},
+        }
     }
 };
+
+pub const MBC3 = struct {
+    cartridge_header: CartridgeHeader,
+
+    /// Any write with a value of $A in the lower nibble
+    /// to the range 0000-1FFF enables the ram/RTC.
+    ram_rtc_enable: bool,
+
+    /// Any write to the range 2000-3FFF
+    /// selects the ROM bank for the region 4000-7FFF.
+    /// If $00 is written to this, it defaults to $01
+    rom_bank_number: u7,
+
+    /// Any write to the range 4000-5FFF
+    /// selects the RAM bank number or the upper two bits (5-6) of ROM
+    /// If neither RAM nor ROM is large enough this does nothing.
+    ram_bank_number: u2,
+
+    game_rom: ?[]const u8,
+    external_ram: ?[]u8,
+
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, game_rom: ?[]const u8) !MBC3 {
+        var header = CartridgeHeader.empty();
+        var external_ram: ?[]u8 = null;
+
+        if (game_rom) |gr| {
+            header = try CartridgeHeader.init(gr);
+
+            if (std.fs.cwd().openFile(header.getTitle(), .{})) |file| {
+                // Load the previous state before the emulator was closed
+                external_ram = try file.readToEndAlloc(allocator, header.getRAMSize());
+            } else |_| {
+                // Assume there's no previous state even if it's some other error
+                external_ram = try allocator.alloc(u8, header.getRAMSize());
+            }
+        }
+
+        return .{
+            .cartridge_header = header,
+            .ram_rtc_enable = false,
+            .rom_bank_number = 1,
+            .ram_bank_number = 0,
+            .game_rom = game_rom,
+            .external_ram = external_ram,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *MBC3) void {
+        if (self.external_ram) |ram| {
+            switch (self.cartridge_header.ctype) {
+                CartridgeHeader.Type.MBC3_RAM_BATTERY,
+                CartridgeHeader.Type.MBC3_TIMER_RAM_BATTERY,
+                => trySave(
+                    self.cartridge_header.getTitle(),
+                    ram[0..],
+                ),
+                else => {},
+            }
+
+            self.allocator.free(ram);
+        }
+    }
+
+    pub fn read(self: *MBC3, addr: u16) u8 {
+        return switch (addr) {
+            0x0000...0x3FFF => {
+                if (self.game_rom == null) return 0xFF;
+                return self.game_rom.?[addr];
+            },
+            0x4000...0x7FFF => {
+                if (self.game_rom == null) return 0xFF;
+
+                const normAddr = addr - 0x4000;
+                const baseAddr = 0x4000 * @as(usize, self.rom_bank_number);
+                return self.game_rom.?[baseAddr + normAddr];
+            },
+            0xA000...0xBFFF => {
+                if (!self.ram_rtc_enable or self.external_ram == null) return 0xFF;
+
+                const normAddr = addr - 0xA000;
+                const readAddr = 0x2000 * @as(usize, self.ram_bank_number) + normAddr;
+                return self.external_ram.?[readAddr];
+            },
+            else => 0xFF,
+        };
+    }
+
+    pub fn write(self: *MBC3, addr: u16, value: u8) void {
+        switch (addr) {
+            0x0000...0x1FFF => self.ram_rtc_enable = @as(u4, @truncate(value)) == 0xA,
+            0x2000...0x3FFF => {
+                self.rom_bank_number = @as(u7, @truncate(value));
+                // Set to 1 if it's ever set to 0
+                if (self.rom_bank_number == 0) self.rom_bank_number = 1;
+            },
+            0x4000...0x5FFF => {
+                // Values between $00 and $03 selects ram bank and maps it to 0xA000...0xBFFF
+                if (value <= 0x03) {
+                    self.ram_bank_number = @as(u2, @truncate(value));
+                    return;
+                }
+
+                // Values between $08 and $0C maps the RTC register to 0xA000...0xBFFF
+                // TODO: Implement RTC
+            },
+            0x6000...0x7FFF => {}, // TODO: Implement RTC Latch
+            0xA000...0xBFFF => {
+                if (!self.ram_rtc_enable or self.external_ram == null or self.cartridge_header.getRAMSize() == 0) return;
+
+                const normAddr = addr - 0xA000;
+                const writeAddr = 0x2000 * @as(usize, self.ram_bank_number) + normAddr;
+                self.external_ram.?[writeAddr] = value;
+            },
+            else => {},
+        }
+    }
+};
+
+pub const MBC5 = struct {
+    cartridge_header: CartridgeHeader,
+
+    /// Any write with a value of $A in the lower nibble
+    /// to the range 0000-1FFF enables the ram.
+    ram_enable: bool,
+
+    /// The combination of the 9th bit from writing to region 3000-3FFF
+    /// and 8 bits from writing to the range 2000-2FFF.
+    /// Selects the ROM bank for the region 4000-7FFF (0-1FF).
+    rom_bank_number: u9,
+
+    /// Any write to the range 4000-5FFF
+    /// selects the RAM bank number or the upper two bits (5-6) of ROM
+    /// If neither RAM nor ROM is large enough this does nothing.
+    ram_bank_number: u4,
+
+    game_rom: ?[]const u8,
+    external_ram: ?[]u8,
+
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, game_rom: ?[]const u8) !MBC5 {
+        var header = CartridgeHeader.empty();
+        var external_ram: ?[]u8 = null;
+
+        if (game_rom) |gr| {
+            header = try CartridgeHeader.init(gr);
+
+            if (std.fs.cwd().openFile(header.getTitle(), .{})) |file| {
+                // Load the previous state before the emulator was closed
+                external_ram = try file.readToEndAlloc(allocator, header.getRAMSize());
+            } else |_| {
+                // Assume there's no previous state even if it's some other error
+                external_ram = try allocator.alloc(u8, header.getRAMSize());
+            }
+        }
+
+        return .{
+            .cartridge_header = header,
+            .ram_enable = false,
+            .rom_bank_number = 0,
+            .ram_bank_number = 0,
+            .game_rom = game_rom,
+            .external_ram = external_ram,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *MBC5) void {
+        if (self.external_ram) |ram| {
+            switch (self.cartridge_header.ctype) {
+                CartridgeHeader.Type.MBC5_RAM_BATTERY,
+                CartridgeHeader.Type.MBC5_RUMBLE_RAM_BATTERY,
+                => trySave(
+                    self.cartridge_header.getTitle(),
+                    ram,
+                ),
+                else => {},
+            }
+
+            self.allocator.free(ram);
+        }
+    }
+
+    pub fn read(self: *MBC5, addr: u16) u8 {
+        return switch (addr) {
+            0x0000...0x3FFF => {
+                if (self.game_rom == null) return 0xFF;
+                return self.game_rom.?[addr];
+            },
+            0x4000...0x7FFF => {
+                if (self.game_rom == null) return 0xFF;
+
+                const normAddr = addr - 0x4000;
+                const baseAddr = 0x4000 * @as(usize, self.rom_bank_number);
+                return self.game_rom.?[baseAddr + normAddr];
+            },
+            0xA000...0xBFFF => {
+                if (!self.ram_enable or self.external_ram == null) return 0xFF;
+
+                const normAddr = addr - 0xA000;
+                const readAddr = 0x2000 * @as(usize, self.ram_bank_number) + normAddr;
+                return self.external_ram.?[readAddr];
+            },
+            else => 0xFF,
+        };
+    }
+
+    pub fn write(self: *MBC5, addr: u16, value: u8) void {
+        switch (addr) {
+            0x0000...0x1FFF => self.ram_enable = @as(u4, @truncate(value)) == 0xA,
+            0x2000...0x2FFF => {
+                self.rom_bank_number = @as(u9, value);
+            },
+            0x3000...0x3FFF => {
+                // Set the 9th bit of the rom bank, we're assuming the we take the least significant bit and just shift to the left
+                self.rom_bank_number = (@as(u9, value) << 8) | self.rom_bank_number;
+            },
+            0x4000...0x5FFF => {
+                // TODO: Handle rumble
+                // Bit 3 of the value written to this memory region is mapped to the
+                // rumble motor controller rather than the RAM bank selector.
+                // This means that RAM banks which would require bit 3 to be
+                // set cannot be accessed when a rumble motor is installed.
+                if (value <= 0x0F) self.ram_bank_number = @as(u4, @truncate(value));
+            },
+            0xA000...0xBFFF => {
+                if (!self.ram_enable or self.external_ram == null or self.cartridge_header.getRAMSize() == 0) return;
+
+                const normAddr = addr - 0xA000;
+                const writeAddr = 0x2000 * @as(usize, self.ram_bank_number) + normAddr;
+                self.external_ram.?[writeAddr] = value;
+            },
+            else => {},
+        }
+    }
+};
+
+fn trySave(filename: []u8, external_ram: []const u8) void {
+    if (std.fs.cwd().createFile(filename, .{})) |file| {
+        _ = file.writeAll(external_ram) catch {};
+    } else |_| {}
+}

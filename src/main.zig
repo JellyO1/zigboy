@@ -23,7 +23,9 @@ const PPU = ppu.PPU;
 const mmu = @import("mmu.zig");
 const MMU = mmu.MMU;
 const Timer = @import("timer.zig").Timer;
-const MBC = @import("mbc.zig").MBC;
+const mbci = @import("mbc.zig");
+
+const CartridgeHeader = @import("mbc.zig").CartridgeHeader;
 const tracy = @import("tracy");
 
 pub const Emulator = struct {
@@ -35,7 +37,7 @@ pub const Emulator = struct {
     mmu: *MMU,
     timer: *Timer,
     /// Memory Bank Controller
-    mbc: *MBC,
+    mbc: mbci.MBC,
     /// Total cycles elapsed
     cycles: u64,
 
@@ -52,16 +54,27 @@ pub const Emulator = struct {
             boot_rom = try std.fs.cwd().readFileAlloc(allocator, boot_rom_path.?, 256);
         }
 
+        var header = CartridgeHeader.empty();
         var game_rom: ?[]u8 = null;
         if (game_rom_path) |path| {
             game_rom = try std.fs.cwd().readFileAlloc(allocator, path, 8 * 1024 * 1024); // 8 MiB
+            if (game_rom) |gr| header = try CartridgeHeader.init(gr);
         }
 
-        const mbc = try allocator.create(MBC);
-        mbc.* = try MBC.init(allocator, game_rom);
+        const mbc = switch (header.ctype) {
+            .ROM_ONLY, .ROM_RAM, .ROM_RAM_BATTERY, .MBC1, .MBC1_RAM, .MBC1_RAM_BATTERY => mbci.MBC{ .mbc1 = try mbci.MBC1.init(allocator, game_rom) },
+            .MBC2, .MBC2_BATTERY => mbci.MBC{ .mbc2 = try mbci.MBC2.init(allocator, game_rom) },
+            .MBC3, .MBC3_RAM, .MBC3_RAM_BATTERY, .MBC3_TIMER_BATTERY, .MBC3_TIMER_RAM_BATTERY => mbci.MBC{ .mbc3 = try mbci.MBC3.init(allocator, game_rom) },
+            .MBC5, .MBC5_RAM, .MBC5_RAM_BATTERY, .MBC5_RUMBLE, .MBC5_RUMBLE_RAM, .MBC5_RUMBLE_RAM_BATTERY => mbci.MBC{ .mbc5 = try mbci.MBC5.init(allocator, game_rom) },
+            else => |ctype| {
+                const print = try std.fmt.allocPrint(allocator, "{s} not implemented", .{@tagName(ctype)});
+                defer allocator.free(print);
+                @panic(print);
+            },
+        };
 
         const mmui = try allocator.create(MMU);
-        mmui.* = MMU.init(boot_rom, mbc);
+        mmui.* = MMU.init(boot_rom, @constCast(&mbc));
 
         const cpui = try allocator.create(CPU);
         cpui.* = try CPU.init(allocator, if (boot_rom == null) cpu.Registers{
@@ -110,7 +123,6 @@ pub const Emulator = struct {
         self.allocator.destroy(self.ppu);
         self.allocator.destroy(self.cpu);
         self.allocator.destroy(self.mmu);
-        self.allocator.destroy(self.mbc);
     }
 
     pub fn initTest(allocator: std.mem.Allocator, registers: cpu.Registers, ime: bool, ei_delay: bool) !Emulator {
@@ -214,8 +226,6 @@ pub fn main() !void {
         res.args.log orelse 0 > 0,
     );
     defer emulator.deinit();
-
-    emulator.mbc.printInfo();
 
     {
         errdefer |err| if (err == error.SdlError) std.log.err("SDL error: {s}", .{c.SDL_GetError()});
